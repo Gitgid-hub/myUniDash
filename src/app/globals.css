@@ -1,0 +1,259 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+:root.dark {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+::selection {
+  background: rgba(56, 189, 248, 0.3);
+}
+
+:focus-visible {
+  outline: 2px solid rgba(14, 165, 233, 0.7);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.calendar-scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.calendar-scroll-area::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+/* Class notes — TipTap / ProseMirror */
+.tiptap-editor-shell .ProseMirror {
+  min-height: min(36vh, 300px);
+  outline: none;
+}
+
+.tiptap-editor-shell .ProseMirror p {
+  margin: 0.4em 0;
+}
+
+.tiptap-editor-shell .ProseMirror ul,
+.tiptap-editor-shell .ProseMirror ol {
+  margin: 0.35em 0;
+  padding-inline-start: 1.35rem;
+  list-style-position: outside;
+}
+
+/* Tailwind preflight removes markers — restore bullets / numbers */
+.tiptap-editor-shell .ProseMirror ul {
+  list-style-type: disc;
+}
+
+.tiptap-editor-shell .ProseMirror ol {
+  list-style-type: decimal;
+}
+
+/* TipTap wraps list item text in <p> — kill double vertical rhythm */
+.tiptap-editor-shell .ProseMirror li > p {
+  margin: 0;
+}
+
+.tiptap-editor-shell .ProseMirror li > p + p {
+  margin-top: 0.35em;
+}
+
+.tiptap-editor-shell .ProseMirror li {
+  margin: 0.15em 0;
+}
+
+.tiptap-editor-shell .ProseMirror blockquote {
+  margin: 0.5em 0;
+  padding-inline-start: 1rem;
+  border-inline-start: 3px solid rgba(148, 163, 184, 0.55);
+}
+
+.tiptap-editor-shell .ProseMirror pre {
+  margin: 0.5em 0;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.65rem;
+  overflow-x: auto;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.dark .tiptap-editor-shell .ProseMirror pre {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tiptap-editor-shell .ProseMirror hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.45);
+}
+
+.dark .tiptap-editor-shell .ProseMirror hr {
+  border-top-color: rgba(255, 255, 255, 0.12);
+}
+
+.tiptap-editor-shell p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: rgb(148 163 184);
+  pointer-events: none;
+  height: 0;
+}
+
+.dark .tiptap-editor-shell p.is-editor-empty:first-child::before {
+  color: rgb(100 116 139);
+}
+
+.prose-note-preview {
+  min-height: min(42vh, 360px);
+}
+
+.prose-note-preview p {
+  margin: 0.5em 0;
+}
+
+.prose-note-preview ul,
+.prose-note-preview ol {
+  margin: 0.5em 0;
+  padding-inline-start: 1.35rem;
+  list-style-position: outside;
+}
+
+.prose-note-preview ul {
+  list-style-type: disc;
+}
+
+.prose-note-preview ol {
+  list-style-type: decimal;
+}
+
+.prose-note-preview li > p {
+  margin: 0;
+}
+
+.prose-note-preview li > p + p {
+  margin-top: 0.35em;
+}
+
+.prose-note-preview li {
+  margin: 0.15em 0;
+}
+
+.prose-note-preview blockquote {
+  margin: 0.75em 0;
+  padding-inline-start: 1rem;
+  border-inline-start: 3px solid rgba(148, 163, 184, 0.55);
+}
+
+.prose-note-preview pre {
+  padding: 0.75rem;
+  border-radius: 0.65rem;
+  overflow-x: auto;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.dark .prose-note-preview pre {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.calendar-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.calendar-scroll-area::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0);
+  border-radius: 999px;
+  transition: background-color 420ms ease;
+}
+
+.calendar-scroll-area-active {
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+.calendar-scroll-area-active::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+.calendar-week-swipe-zone {
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: contain;
+  contain: layout paint style;
+}
+
+@keyframes cmd-save-pulse {
+  0% {
+    transform: translateX(0) scale(1);
+  }
+  25% {
+    transform: translateX(-0.75px) scale(1.015);
+  }
+  50% {
+    transform: translateX(0.75px) scale(1.02);
+  }
+  75% {
+    transform: translateX(-0.5px) scale(1.015);
+  }
+  100% {
+    transform: translateX(0) scale(1);
+  }
+}
+
+.cmd-save-active {
+  animation: cmd-save-pulse 320ms ease-in-out infinite;
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.5),
+    0 0 20px rgba(56, 189, 248, 0.45),
+    0 0 36px rgba(59, 130, 246, 0.28);
+}
