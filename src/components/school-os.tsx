@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import {
   AlarmClock,
@@ -20,16 +20,27 @@ import {
   LayoutDashboard,
   ListTodo,
   Moon,
+  Paperclip,
   Plus,
   Search,
   Sun,
   Timer,
   Trash2,
   TriangleAlert,
+  Upload,
   X
 } from "lucide-react";
 import { ClassNotesPanel, defaultClassNoteTitle } from "@/components/class-notes-panel";
 import { usePruneClassNoteAttachmentBlobs } from "@/lib/class-note-attachment-blobs";
+import {
+  createTaskAttachmentMeta,
+  deleteTaskAttachmentBlob,
+  deleteTaskAttachmentBlobsForTask,
+  getTaskAttachmentBlob,
+  saveTaskAttachmentBlob,
+  TASK_ATTACHMENT_ACCEPT,
+  TASK_ATTACHMENT_MAX_BYTES
+} from "@/lib/task-attachment-blobs";
 import { formatDue, formatWeekOfLabel, getWeekKey, isOverdue, isToday, nowIso, startOfDay } from "@/lib/date";
 import {
   byPriority,
@@ -46,7 +57,17 @@ import {
   workloadByCourse
 } from "@/lib/selectors";
 import { useSchoolStore } from "@/lib/store";
-import type { Course, CourseMeeting, MainView, Task, TaskPriority, TaskStatus, WeekDay, WorkBlock } from "@/lib/types";
+import type {
+  Course,
+  CourseMeeting,
+  MainView,
+  Task,
+  TaskAttachment,
+  TaskPriority,
+  TaskStatus,
+  WeekDay,
+  WorkBlock
+} from "@/lib/types";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { Badge, Button, Panel } from "@/components/ui";
 import { getSupabaseClient } from "@/lib/supabase";
@@ -235,6 +256,12 @@ function buildBookedBlockByTaskId(workBlocks: WorkBlock[], nowTs = Date.now()): 
 
 function createLocalId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function formatFileBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 type CalendarUndoEntry =
@@ -571,22 +598,26 @@ export function SchoolOS() {
     return { completed, workload };
   }, [state.tasks, activeCourses]);
 
-  const handleCreateTask = useCallback((input: {
-    title: string;
-    description?: string;
-    courseId?: string | "general";
-    status?: TaskStatus;
-    dueAt?: string;
-    priority?: TaskPriority;
-    effort?: number;
-    tags?: string[];
-    attachments?: string[];
-    recurring?: Task["recurring"];
-  }) => {
-    addTask(input);
-    // Ensure the just-created task is visible immediately in filtered views.
-    dispatch({ type: "set-course-filter", payload: "all" });
-  }, [addTask, dispatch]);
+  const handleCreateTask = useCallback(
+    (input: {
+      id?: string;
+      title: string;
+      description?: string;
+      courseId?: string | "general";
+      status?: TaskStatus;
+      dueAt?: string;
+      priority?: TaskPriority;
+      effort?: number;
+      tags?: string[];
+      attachments?: TaskAttachment[];
+      recurring?: Task["recurring"];
+    }) => {
+      addTask(input);
+      // Ensure the just-created task is visible immediately in filtered views.
+      dispatch({ type: "set-course-filter", payload: "all" });
+    },
+    [addTask, dispatch]
+  );
 
   const kanbanTasks = useMemo(() => {
     const query = quickTaskSearch.trim().toLowerCase();
@@ -619,9 +650,16 @@ export function SchoolOS() {
   const handleFocusTask = useCallback((id: string) => {
     dispatch({ type: "set-focus", payload: id });
   }, [dispatch]);
-  const handleDeleteTask = useCallback((id: string) => {
-    dispatch({ type: "delete-task", payload: id });
-  }, [dispatch]);
+  const handleDeleteTask = useCallback(
+    (id: string) => {
+      const task = state.tasks.find((t) => t.id === id);
+      if (task?.attachments?.length) {
+        void deleteTaskAttachmentBlobsForTask(id).catch(() => {});
+      }
+      dispatch({ type: "delete-task", payload: id });
+    },
+    [dispatch, state.tasks]
+  );
   const handleOpenComposer = useCallback((courseId?: string | "general") => {
     setComposerInitialCourseId(courseId);
     dispatch({ type: "set-composer", payload: true });
@@ -900,8 +938,8 @@ export function SchoolOS() {
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f7f8fa_0%,#f4f5f7_100%)] text-slate-900 dark:bg-[linear-gradient(180deg,#090b0d_0%,#0d1014_100%)] dark:text-slate-100">
-      <div className="mx-auto grid min-h-screen max-w-[1560px] grid-cols-1 gap-5 p-5 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <aside className="animate-fadeSlide space-y-4">
+      <div className="mx-auto grid min-h-[100dvh] max-w-[1560px] grid-cols-1 gap-5 p-5 lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-1">
+        <aside className="animate-fadeSlide space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:pr-0.5">
           <Panel className="bg-white/88 dark:bg-[#101317]/90">
             <div className="space-y-2">
               <h1 className="text-[18px] font-semibold tracking-tight">School OS</h1>
@@ -1035,9 +1073,15 @@ export function SchoolOS() {
           </Panel>
         </aside>
 
-        <main className="animate-fadeSlide space-y-5">
+        <main
+          className={
+            state.ui.activeView === "kanban"
+              ? "animate-fadeSlide flex h-full min-h-0 flex-col gap-5"
+              : "animate-fadeSlide space-y-5"
+          }
+        >
           {state.ui.activeView !== "calendar" && (
-            <Panel className="bg-white/90 dark:bg-[#101317]/90">
+            <Panel className="shrink-0 bg-white/90 dark:bg-[#101317]/90">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-[34px] font-semibold tracking-[-0.03em]">{viewTitle(state.ui.activeView)}</h2>
@@ -1099,23 +1143,25 @@ export function SchoolOS() {
             </>
           )}
           {state.ui.activeView === "kanban" && (
-            <MemoKanbanView
-              tasks={kanbanTab === "board" ? kanbanBoardTasks : kanbanCompletedTasks}
-              tab={kanbanTab}
-              onTabChange={setKanbanTab}
-              boardCount={kanbanBoardTotal}
-              completedCount={kanbanCompletedTotal}
-              thisWeekCompletedCount={completedThisWeek}
-              weeklyCompletedBuckets={kanbanWeeklyBuckets}
-              courses={state.courses}
-              workBlocks={state.workBlocks}
-              quickSearchQuery={quickTaskSearch}
-              onUpdate={updateTask}
-              onDelete={handleDeleteTask}
-              onFocus={handleFocusTask}
-              onToggleDone={handleKanbanToggleDone}
-              onOpenComposer={handleOpenComposer}
-            />
+            <div className="flex min-h-0 flex-1 flex-col">
+              <MemoKanbanView
+                tasks={kanbanTab === "board" ? kanbanBoardTasks : kanbanCompletedTasks}
+                tab={kanbanTab}
+                onTabChange={setKanbanTab}
+                boardCount={kanbanBoardTotal}
+                completedCount={kanbanCompletedTotal}
+                thisWeekCompletedCount={completedThisWeek}
+                weeklyCompletedBuckets={kanbanWeeklyBuckets}
+                courses={state.courses}
+                workBlocks={state.workBlocks}
+                quickSearchQuery={quickTaskSearch}
+                onUpdate={updateTask}
+                onDelete={handleDeleteTask}
+                onFocus={handleFocusTask}
+                onToggleDone={handleKanbanToggleDone}
+                onOpenComposer={handleOpenComposer}
+              />
+            </div>
           )}
           {state.ui.activeView === "calendar" && (
             <MemoCalendarView
@@ -1237,7 +1283,7 @@ export function SchoolOS() {
             <Panel className="bg-white/92 dark:bg-[#101317]/92">
               <h3 className="mb-2 font-semibold">Keyboard</h3>
               <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
-                <li>`N` add task</li>
+                <li>`N` or Hebrew `מ` add task</li>
                 <li>`Cmd/Ctrl + K` search</li>
                 <li>`X` mark focused task done</li>
                 <li>`1`-`9` and `0` switch views without ⌘/Ctrl — same order as the sidebar (⌘+digit is left to the browser for tabs)</li>
@@ -2009,66 +2055,69 @@ function KanbanView({
   }
 
   return (
-    <div className="h-[calc(100vh-220px)] overflow-y-auto pr-1 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex rounded-2xl border border-slate-200/90 bg-slate-50/80 p-1 dark:border-white/10 dark:bg-white/[0.04]">
-          <button
-            type="button"
-            onClick={() => onTabChange("board")}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-              tab === "board"
-                ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
-                : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
-            }`}
-          >
-            Board
-            <span className="ml-2 rounded-full bg-slate-200/80 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
-              {boardCount}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onTabChange("completed")}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-              tab === "completed"
-                ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
-                : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
-            }`}
-          >
-            Completed
-            <span className="ml-2 rounded-full bg-slate-200/80 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
-              {completedCount}
-            </span>
-          </button>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="shrink-0 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="inline-flex rounded-2xl border border-slate-200/90 bg-slate-50/80 p-1 dark:border-white/10 dark:bg-white/[0.04]">
+            <button
+              type="button"
+              onClick={() => onTabChange("board")}
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                tab === "board"
+                  ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
+                  : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+              }`}
+            >
+              Board
+              <span className="ml-2 rounded-full bg-slate-200/80 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+                {boardCount}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onTabChange("completed")}
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                tab === "completed"
+                  ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
+                  : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+              }`}
+            >
+              Completed
+              <span className="ml-2 rounded-full bg-slate-200/80 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+                {completedCount}
+              </span>
+            </button>
+          </div>
+          {tab === "completed" && (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+              <div className="flex items-center gap-2 rounded-2xl border border-emerald-200/60 bg-emerald-500/10 px-3 py-2 dark:border-emerald-500/25 dark:bg-emerald-500/10">
+                <span className="text-xs font-medium uppercase tracking-wide text-emerald-800/90 dark:text-emerald-200/90">This week</span>
+                <span className="text-sm font-semibold tabular-nums text-emerald-800 dark:text-emerald-200">{thisWeekCompletedCount}</span>
+              </div>
+            </div>
+          )}
         </div>
-        {tab === "completed" && (
-          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-            <div className="flex items-center gap-2 rounded-2xl border border-emerald-200/60 bg-emerald-500/10 px-3 py-2 dark:border-emerald-500/25 dark:bg-emerald-500/10">
-              <span className="text-xs font-medium uppercase tracking-wide text-emerald-800/90 dark:text-emerald-200/90">This week</span>
-              <span className="text-sm font-semibold tabular-nums text-emerald-800 dark:text-emerald-200">{thisWeekCompletedCount}</span>
+
+        {tab === "completed" && weeklyCompletedBuckets.length > 0 && (
+          <div className="rounded-2xl border border-slate-200/80 bg-slate-50/50 px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]">
+            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Completed by week</p>
+            <div className="flex max-h-24 flex-wrap gap-2 overflow-y-auto">
+              {weeklyCompletedBuckets.map(({ weekKey, count }) => (
+                <span
+                  key={weekKey}
+                  title={formatWeekOfLabel(weekKey)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/80 px-2.5 py-1 text-[11px] text-slate-600 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-300"
+                >
+                  <span className="max-w-[120px] truncate">{formatWeekOfLabel(weekKey)}</span>
+                  <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">{count}</span>
+                </span>
+              ))}
             </div>
           </div>
         )}
       </div>
 
-      {tab === "completed" && weeklyCompletedBuckets.length > 0 && (
-        <div className="rounded-2xl border border-slate-200/80 bg-slate-50/50 px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]">
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Completed by week</p>
-          <div className="flex max-h-24 flex-wrap gap-2 overflow-y-auto">
-            {weeklyCompletedBuckets.map(({ weekKey, count }) => (
-              <span
-                key={weekKey}
-                title={formatWeekOfLabel(weekKey)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white/80 px-2.5 py-1 text-[11px] text-slate-600 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-300"
-              >
-                <span className="max-w-[120px] truncate">{formatWeekOfLabel(weekKey)}</span>
-                <span className="font-semibold tabular-nums text-slate-900 dark:text-slate-100">{count}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden pr-1 pb-2">
       {courseGroups.map((group) => {
         const isCollapsed = searchActive ? group.tasks.length === 0 : (collapsedGroups[group.id] ?? false);
         const activeSortMode = sortModeByGroup[group.id] ?? "date";
@@ -2259,6 +2308,7 @@ function KanbanView({
           )}
         </Panel>
       )}
+      </div>
     </div>
   );
 }
@@ -2429,6 +2479,8 @@ function CalendarView({
   const dayTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const calendarScrollTopRef = useRef<number | null>(null);
   const syncedCalendarScrollElsRef = useRef<WeakSet<Element>>(new WeakSet());
+  /** Week grid uses `h-20` (80px) per hour in the time gutter. */
+  const WEEK_TIMELINE_ROW_PX = 80;
   const weekWbInteractionRef = useRef<{
     dragPreview: { id: string; startMinutes: number; endMinutes: number; dateKey?: string } | null;
     resizePreview: { id: string; startMinutes: number; endMinutes: number; dateKey?: string } | null;
@@ -2437,10 +2489,23 @@ function CalendarView({
   const syncCalendarScrollEl = useCallback((el: HTMLDivElement | null) => {
     if (!el) return;
     if (syncedCalendarScrollElsRef.current.has(el)) return;
-    const initialTop = calendarScrollTopRef.current ?? 7 * (mode === "day" ? dayHourHeight : 80);
-    el.scrollTop = initialTop;
+    let top: number;
+    if (mode === "week") {
+      top = 8 * WEEK_TIMELINE_ROW_PX;
+    } else if (mode === "day") {
+      const pos = getCurrentTimePosition(new Date(), 0, 24, dayHourHeight);
+      top = pos != null ? Math.max(0, pos - dayHourHeight) : 8 * dayHourHeight;
+    } else {
+      top = calendarScrollTopRef.current ?? 0;
+    }
+    el.scrollTop = top;
+    calendarScrollTopRef.current = el.scrollTop;
     syncedCalendarScrollElsRef.current.add(el);
   }, [dayHourHeight, mode]);
+
+  useLayoutEffect(() => {
+    syncedCalendarScrollElsRef.current = new WeakSet();
+  }, [mode]);
 
   function navigate(direction: "prev" | "next") {
     if (mode === "week" && weekTransition) return;
@@ -4086,6 +4151,9 @@ function ByPriorityView({
   );
 }
 
+const TASK_COMPOSER_MAX_FILES = 12;
+const TASK_DETAIL_MAX_ATTACHMENTS = 24;
+
 function TaskComposer({
   courses,
   initialCourseId,
@@ -4096,12 +4164,14 @@ function TaskComposer({
   initialCourseId?: string | "general";
   onClose: () => void;
   onSave: (input: {
+    id?: string;
     title: string;
     description?: string;
     courseId?: string | "general";
     dueAt?: string;
     priority?: TaskPriority;
-  }) => void;
+    attachments?: TaskAttachment[];
+  }) => void | Promise<void>;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -4109,24 +4179,76 @@ function TaskComposer({
   const [priority, setPriority] = useState<TaskPriority>("medium");
   const [dueAt, setDueAt] = useState("");
   const [isCommandHeld, setIsCommandHeld] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [fileHint, setFileHint] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setCourseId(initialCourseId ?? "");
   }, [initialCourseId]);
 
-  function handleCreateTask() {
-    if (!title.trim() || !courseId) {
+  const removePending = useCallback((index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const onPickFiles = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setFileHint(null);
+      const list = event.target.files;
+      if (!list?.length) return;
+      const next: File[] = [...pendingFiles];
+      for (const file of Array.from(list)) {
+        if (file.size > TASK_ATTACHMENT_MAX_BYTES) {
+          setFileHint(`Skipped "${file.name}" — larger than ${Math.round(TASK_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB.`);
+          continue;
+        }
+        if (next.length >= TASK_COMPOSER_MAX_FILES) {
+          setFileHint(`At most ${TASK_COMPOSER_MAX_FILES} files.`);
+          break;
+        }
+        next.push(file);
+      }
+      setPendingFiles(next);
+      event.target.value = "";
+    },
+    [pendingFiles]
+  );
+
+  const handleCreateTask = useCallback(async () => {
+    if (!title.trim() || !courseId || saving) {
       return;
     }
-    onSave({
-      title,
-      description,
-      courseId: courseId as string | "general",
-      dueAt: dueAt ? new Date(dueAt).toISOString() : undefined,
-      priority
-    });
-    onClose();
-  }
+    setSaving(true);
+    setFileHint(null);
+    const taskId = createLocalId("task");
+    try {
+      const attachments: TaskAttachment[] = [];
+      for (const file of pendingFiles) {
+        const attId = createLocalId("tatt");
+        const meta = createTaskAttachmentMeta(file, attId);
+        await saveTaskAttachmentBlob(taskId, attId, file);
+        attachments.push(meta);
+      }
+      await Promise.resolve(
+        onSave({
+          id: taskId,
+          title,
+          description,
+          courseId: courseId as string | "general",
+          dueAt: dueAt ? new Date(dueAt).toISOString() : undefined,
+          priority,
+          attachments: attachments.length ? attachments : undefined
+        })
+      );
+      onClose();
+    } catch (e) {
+      void deleteTaskAttachmentBlobsForTask(taskId).catch(() => {});
+      setFileHint(e instanceof Error ? e.message : "Could not save attachments.");
+    } finally {
+      setSaving(false);
+    }
+  }, [courseId, description, dueAt, onClose, onSave, pendingFiles, priority, saving, title]);
 
   useEffect(() => {
     function onWindowKeyDown(event: KeyboardEvent) {
@@ -4136,7 +4258,7 @@ function TaskComposer({
       if (event.key !== "Enter") return;
       if (!(event.metaKey || event.ctrlKey)) return;
       event.preventDefault();
-      handleCreateTask();
+      void handleCreateTask();
     }
     function onWindowKeyUp(event: KeyboardEvent) {
       if (!event.metaKey && !event.ctrlKey) {
@@ -4154,7 +4276,7 @@ function TaskComposer({
       window.removeEventListener("keyup", onWindowKeyUp);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [title, description, courseId, dueAt, priority]);
+  }, [handleCreateTask]);
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-slate-950/65 p-3 backdrop-blur-sm">
@@ -4164,37 +4286,114 @@ function TaskComposer({
           if (event.key !== "Enter") return;
           if (!(event.metaKey || event.ctrlKey)) return;
           event.preventDefault();
-          handleCreateTask();
+          void handleCreateTask();
         }}
       >
         <div className="mb-3 flex items-center justify-between">
           <h3 className="font-semibold">New Assignment</h3>
-          <Button variant="ghost" onClick={onClose}>Close</Button>
+          <Button variant="ghost" onClick={onClose}>
+            Close
+          </Button>
         </div>
         <div className="grid gap-2 md:grid-cols-2">
-          <select value={courseId} onChange={(event) => setCourseId(event.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5">
-            <option value="" disabled>Select course</option>
-            {courses.map((course) => <option key={course.id} value={course.id}>{course.code} {course.name}</option>)}
+          <select
+            value={courseId}
+            onChange={(event) => setCourseId(event.target.value)}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
+          >
+            <option value="" disabled>
+              Select course
+            </option>
+            {courses.map((course) => (
+              <option key={course.id} value={course.id}>
+                {course.code} {course.name}
+              </option>
+            ))}
             <option value="general">General</option>
           </select>
-          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={courseId ? "Assignment title" : "Select course first"} disabled={!courseId} className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/5" />
-          <input value={dueAt} onChange={(event) => setDueAt(event.target.value)} type="datetime-local" className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5" />
-          <select value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5">
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder={courseId ? "Assignment title" : "Select course first"}
+            disabled={!courseId}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/5"
+          />
+          <input
+            value={dueAt}
+            onChange={(event) => setDueAt(event.target.value)}
+            type="datetime-local"
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
+          />
+          <select
+            value={priority}
+            onChange={(event) => setPriority(event.target.value as TaskPriority)}
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
+          >
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
             <option value="urgent">Urgent</option>
           </select>
-          <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Description" className="md:col-span-2 min-h-[100px] rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5" />
+          <div className="md:col-span-2 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={TASK_ATTACHMENT_ACCEPT}
+                className="hidden"
+                onChange={onPickFiles}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="inline-flex items-center gap-2"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!courseId || saving}
+              >
+                <Paperclip className="h-4 w-4" aria-hidden />
+                Attach files
+              </Button>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                PDF, Office, images, zip — stored in this browser (IndexedDB).
+              </span>
+            </div>
+            {pendingFiles.length > 0 ? (
+              <ul className="space-y-1 rounded-lg border border-slate-200/90 bg-slate-50/80 p-2 text-xs dark:border-white/10 dark:bg-white/[0.04]">
+                {pendingFiles.map((file, index) => (
+                  <li key={`${file.name}-${index}`} className="flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate">{file.name}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded p-1 text-slate-500 hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
+                      onClick={() => removePending(index)}
+                      aria-label={`Remove ${file.name}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {fileHint ? <p className="text-xs text-amber-700 dark:text-amber-300">{fileHint}</p> : null}
+          </div>
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Description"
+            className="md:col-span-2 min-h-[100px] rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
+          />
         </div>
         <div className="mt-3 flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="outline" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
           <Button
-            onClick={handleCreateTask}
-            disabled={!courseId || !title.trim()}
+            onClick={() => void handleCreateTask()}
+            disabled={!courseId || !title.trim() || saving}
             className={isCommandHeld ? "cmd-save-active" : ""}
           >
-            Save Task
+            {saving ? "Saving…" : "Save Task"}
           </Button>
         </div>
       </Panel>
@@ -4264,7 +4463,22 @@ function TaskDetailModal({
   const [status, setStatus] = useState<TaskStatus>(task.status);
   const [priority, setPriority] = useState<TaskPriority>(task.priority);
   const [dueAt, setDueAt] = useState(toLocalDateInput(task.dueAt));
+  const [attachments, setAttachments] = useState<TaskAttachment[]>(task.attachments ?? []);
+  const [pendingFilesById, setPendingFilesById] = useState<Record<string, File>>({});
+  const [attachErr, setAttachErr] = useState<string | null>(null);
+  const [blobReady, setBlobReady] = useState<Record<string, boolean>>({});
+  const [detailSaving, setDetailSaving] = useState(false);
   const [isCommandHeld, setIsCommandHeld] = useState(false);
+  const taskFileInputRef = useRef<HTMLInputElement>(null);
+
+  const attachmentLocalSig = useMemo(() => {
+    const attPart = attachments.map((a) => `${a.id}:${a.size}`).join("|");
+    const pendPart = Object.keys(pendingFilesById)
+      .sort()
+      .map((id) => `${id}:${pendingFilesById[id]?.size ?? 0}`)
+      .join(",");
+    return `${attPart}|${pendPart}`;
+  }, [attachments, pendingFilesById]);
 
   useEffect(() => {
     setTitle(task.title);
@@ -4273,7 +4487,31 @@ function TaskDetailModal({
     setStatus(task.status);
     setPriority(task.priority);
     setDueAt(toLocalDateInput(task.dueAt));
+    setAttachments(task.attachments ?? []);
+    setPendingFilesById({});
+    setAttachErr(null);
   }, [task]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const list = attachments;
+    void (async () => {
+      await new Promise<void>((r) => queueMicrotask(() => r()));
+      const next: Record<string, boolean> = {};
+      for (const a of list) {
+        if (pendingFilesById[a.id]) {
+          next[a.id] = true;
+          continue;
+        }
+        const b = await getTaskAttachmentBlob(task.id, a.id);
+        next[a.id] = !!(b && b.size > 0);
+      }
+      if (!cancelled) setBlobReady(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [task.id, attachmentLocalSig, pendingFilesById]);
 
   const detectedLinks = useMemo(() => {
     const matches = description.match(/https?:\/\/[^\s]+/g) ?? [];
@@ -4285,7 +4523,67 @@ function TaskDetailModal({
     ? `Booked ${new Date(nextBookedBlock.startAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${new Date(nextBookedBlock.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
     : "Still not booked";
 
-  function handleSave() {
+  const handleTaskAttachFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.target;
+    const list = Array.from(input.files ?? []);
+    input.value = "";
+    if (!list.length) return;
+    setAttachErr(null);
+    for (const file of list) {
+      if (file.size > TASK_ATTACHMENT_MAX_BYTES) {
+        setAttachErr(
+          `"${file.name}" is too large (${formatFileBytes(file.size)}). Max is ${formatFileBytes(TASK_ATTACHMENT_MAX_BYTES)}.`
+        );
+        return;
+      }
+    }
+    if (attachments.length + list.length > TASK_DETAIL_MAX_ATTACHMENTS) {
+      setAttachErr(`At most ${TASK_DETAIL_MAX_ATTACHMENTS} files per task.`);
+      return;
+    }
+    const additions: TaskAttachment[] = [];
+    const filesById: Record<string, File> = {};
+    for (const file of list) {
+      const attId = createLocalId("tatt");
+      additions.push(createTaskAttachmentMeta(file, attId));
+      filesById[attId] = file;
+    }
+    setAttachments((prev) => [...prev, ...additions]);
+    setPendingFilesById((prev) => ({ ...prev, ...filesById }));
+  };
+
+  const removeTaskAttachment = (att: TaskAttachment) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== att.id));
+    setPendingFilesById((prev) => {
+      if (!prev[att.id]) return prev;
+      const next = { ...prev };
+      delete next[att.id];
+      return next;
+    });
+    setBlobReady((prev) => {
+      const next = { ...prev };
+      delete next[att.id];
+      return next;
+    });
+  };
+
+  const openTaskAttachment = async (att: TaskAttachment) => {
+    const pending = pendingFilesById[att.id];
+    if (pending) {
+      const url = URL.createObjectURL(pending);
+      window.open(url, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
+      return;
+    }
+    const blob = await getTaskAttachmentBlob(task.id, att.id);
+    if (!blob?.size) return;
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
+  };
+
+  async function handleSave() {
+    if (detailSaving) return;
     const normalizedDueAt = dueAt
       ? (() => {
           const [year, month, day] = dueAt.split("-").map(Number);
@@ -4293,17 +4591,42 @@ function TaskDetailModal({
           return date.toISOString();
         })()
       : undefined;
-    onSave({
-      id: task.id,
-      title: title.trim() || task.title,
-      description,
-      courseId,
-      status,
-      priority,
-      effort: task.effort,
-      dueAt: normalizedDueAt
-    });
-    onClose();
+    setDetailSaving(true);
+    setAttachErr(null);
+    try {
+      for (const a of attachments) {
+        const file = pendingFilesById[a.id];
+        if (!file) continue;
+        await saveTaskAttachmentBlob(task.id, a.id, file);
+        const verify = await getTaskAttachmentBlob(task.id, a.id);
+        if (!verify || verify.size < 1) {
+          throw new Error("Storage wrote nothing readable (private mode, full disk, or blocked IndexedDB).");
+        }
+      }
+      const prev = task.attachments ?? [];
+      for (const p of prev) {
+        if (!attachments.some((x) => x.id === p.id)) {
+          await deleteTaskAttachmentBlob(task.id, p.id);
+        }
+      }
+      onSave({
+        id: task.id,
+        title: title.trim() || task.title,
+        description,
+        courseId,
+        status,
+        priority,
+        effort: task.effort,
+        dueAt: normalizedDueAt,
+        attachments
+      });
+      setPendingFilesById({});
+      onClose();
+    } catch (e) {
+      setAttachErr(e instanceof Error ? e.message : "Could not update attachments.");
+    } finally {
+      setDetailSaving(false);
+    }
   }
 
   useEffect(() => {
@@ -4314,7 +4637,7 @@ function TaskDetailModal({
       if (event.key !== "Enter") return;
       if (!(event.metaKey || event.ctrlKey)) return;
       event.preventDefault();
-      handleSave();
+      void handleSave();
     }
     function onWindowKeyUp(event: KeyboardEvent) {
       if (!event.metaKey && !event.ctrlKey) {
@@ -4332,10 +4655,15 @@ function TaskDetailModal({
       window.removeEventListener("keyup", onWindowKeyUp);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [title, description, courseId, status, priority, dueAt, task.effort]);
+  }, [title, description, courseId, status, priority, dueAt, task, attachments, pendingFilesById, detailSaving]);
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm"
+      onClick={() => {
+        if (!detailSaving) onClose();
+      }}
+    >
       <Panel
         className="w-full max-w-2xl bg-white/96 dark:bg-[#101317]/96"
         onClick={(event) => event.stopPropagation()}
@@ -4343,13 +4671,13 @@ function TaskDetailModal({
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            handleSave();
+            void handleSave();
           }}
           onKeyDown={(event) => {
             if (event.key !== "Enter") return;
             if (!(event.metaKey || event.ctrlKey)) return;
             event.preventDefault();
-            handleSave();
+            void handleSave();
           }}
         >
           <div className="mb-4 flex items-center justify-between">
@@ -4357,7 +4685,7 @@ function TaskDetailModal({
               <h3 className="text-xl font-semibold tracking-tight">Task details</h3>
               <p className="text-sm text-slate-500 dark:text-slate-400">Review and edit this task.</p>
             </div>
-            <Button variant="ghost" onClick={onClose} className="h-10 w-10 p-0">
+            <Button variant="ghost" onClick={onClose} disabled={detailSaving} className="h-10 w-10 p-0">
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -4402,11 +4730,85 @@ function TaskDetailModal({
                 </div>
               </div>
             )}
+            <div className="md:col-span-2 space-y-2 rounded-2xl border border-slate-200/80 bg-slate-50/60 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Files ({attachments.length}/{TASK_DETAIL_MAX_ATTACHMENTS})
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={taskFileInputRef}
+                    type="file"
+                    multiple
+                    accept={TASK_ATTACHMENT_ACCEPT}
+                    className="hidden"
+                    disabled={detailSaving}
+                    onChange={handleTaskAttachFiles}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs"
+                    disabled={detailSaving || attachments.length >= TASK_DETAIL_MAX_ATTACHMENTS}
+                    onClick={() => taskFileInputRef.current?.click()}
+                  >
+                    <Upload className="h-3.5 w-3.5" aria-hidden />
+                    Add files
+                  </Button>
+                </div>
+              </div>
+              <p className="text-[10px] leading-snug text-slate-400 dark:text-slate-500">
+                Stored in this browser (IndexedDB). New files and removals apply when you save. Click a file to preview.
+              </p>
+              {attachErr ? <p className="text-xs text-rose-600 dark:text-rose-400">{attachErr}</p> : null}
+              {attachments.length === 0 ? (
+                <p className="text-xs text-slate-500 dark:text-slate-400">No files yet. Use Add files for PDFs or docs from your course site.</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {attachments.map((att) => {
+                    const probe = blobReady[att.id];
+                    const definitelyMissing = probe === false;
+                    return (
+                      <li
+                        key={att.id}
+                        className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white/90 px-3 py-2 text-xs dark:border-white/10 dark:bg-[#15181d]/90"
+                      >
+                        <button
+                          type="button"
+                          disabled={definitelyMissing}
+                          onClick={() => void openTaskAttachment(att)}
+                          className={`min-w-0 flex-1 truncate text-left ${definitelyMissing ? "cursor-not-allowed text-slate-400" : "text-sky-600 underline-offset-2 hover:underline dark:text-sky-300"}`}
+                        >
+                          <span className="inline-flex items-center gap-1.5">
+                            <Paperclip className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                            {att.name}
+                          </span>
+                          <span className="ml-2 text-[10px] text-slate-400">{formatFileBytes(att.size)}</span>
+                          {definitelyMissing ? (
+                            <span className="ml-2 text-[10px] text-amber-600 dark:text-amber-400">(missing)</span>
+                          ) : null}
+                        </button>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded p-1 text-slate-500 hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
+                          aria-label={`Remove ${att.name}`}
+                          onClick={() => void removeTaskAttachment(att)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose}>Close</Button>
-            <Button type="submit" className={isCommandHeld ? "cmd-save-active" : ""}>
-              Save changes
+            <Button variant="outline" onClick={onClose} disabled={detailSaving}>
+              Close
+            </Button>
+            <Button type="submit" disabled={detailSaving} className={isCommandHeld ? "cmd-save-active" : ""}>
+              {detailSaving ? "Saving…" : "Save changes"}
             </Button>
           </div>
         </form>

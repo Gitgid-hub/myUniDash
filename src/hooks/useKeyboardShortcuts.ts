@@ -48,7 +48,8 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
         return;
       }
 
-      if (event.key.toLowerCase() === "n") {
+      // Latin "n" and Hebrew "מ" (same key on Hebrew layouts) open new task / session.
+      if (event.key.toLowerCase() === "n" || event.key === "מ") {
         event.preventDefault();
         if (handlers.getActiveView() === "calendar") {
           handlers.openSessionComposer();

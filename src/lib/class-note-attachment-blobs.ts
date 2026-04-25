@@ -39,6 +39,24 @@ export function isPresentationFile(file: File): boolean {
   return false;
 }
 
+/** Screenshots / slides pasted as images (stored in the same IndexedDB store as presentations). */
+export const CLASS_NOTE_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
+
+export const CLASS_NOTE_IMAGE_ACCEPT = ".png,.jpg,.jpeg,.webp,.gif";
+
+const IMAGE_EXT_OK = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
+
+export function isClassNoteImageFile(file: File): boolean {
+  const t = (file.type || "").toLowerCase();
+  if (t.startsWith("image/")) return true;
+  const ext = extOf(file.name);
+  return ext !== undefined && IMAGE_EXT_OK.has(ext);
+}
+
+export function isClassNoteImageAttachment(att: ClassNoteAttachment): boolean {
+  return (att.mimeType || "").toLowerCase().startsWith("image/");
+}
+
 export function createClassNoteAttachmentMeta(file: File, id: string): ClassNoteAttachment {
   return {
     id,

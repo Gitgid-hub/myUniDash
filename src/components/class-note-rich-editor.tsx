@@ -18,6 +18,7 @@ import {
   Bold,
   Braces,
   Code2,
+  ImagePlus,
   IndentDecrease,
   IndentIncrease,
   Italic,
@@ -33,17 +34,24 @@ import {
   Underline as UnderlineIcon,
   Undo2
 } from "lucide-react";
-import type { ReactNode } from "react";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo } from "react";
+import type { ChangeEvent, ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import type { ClassNoteEditorTextDir } from "@/lib/types";
 import { initialEditorHtml } from "@/lib/class-note-body";
+import { CLASS_NOTE_IMAGE_ACCEPT, CLASS_NOTE_IMAGE_MAX_BYTES, isClassNoteImageFile } from "@/lib/class-note-attachment-blobs";
+import { ClassNoteImage } from "@/lib/tiptap-class-note-image";
 
 export type ClassNoteRichEditorHandle = {
   /** Appends a horizontal rule and sanitized HTML at the end of the document. */
   insertAiSummaryHtml: (html: string) => void;
+  /** Inserts an embedded screenshot node (attachment must already exist in IndexedDB + note.attachments). */
+  insertClassNoteImage: (attachmentId: string, alt?: string) => void;
 };
 
 type ClassNoteRichEditorProps = {
+  noteId: string;
+  /** Save image bytes + metadata; return attachment id, or null on failure. */
+  onRegisterEmbeddedImage: (file: File) => Promise<string | null>;
   body: string;
   onBodyChange: (html: string) => void;
   placeholder: string;
@@ -139,7 +147,11 @@ function FontSizeSelect({ editor }: { editor: Editor }) {
 }
 
 export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNoteRichEditorProps>(
-  function ClassNoteRichEditor({ body, onBodyChange, placeholder, textDir, onTextDirChange }, ref) {
+  function ClassNoteRichEditor({ noteId, onRegisterEmbeddedImage, body, onBodyChange, placeholder, textDir, onTextDirChange }, ref) {
+    const registerImageRef = useRef(onRegisterEmbeddedImage);
+    registerImageRef.current = onRegisterEmbeddedImage;
+    const imageFileRef = useRef<HTMLInputElement>(null);
+
     const extensions = useMemo(
       () => [
         StarterKit.configure({
@@ -150,7 +162,8 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
         TextAlign.configure({ types: ["paragraph", "listItem"] }),
         Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
         Placeholder.configure({ placeholder }),
-        ListKeymap
+        ListKeymap,
+        ClassNoteImage
       ],
       [placeholder]
     );
@@ -186,6 +199,17 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
             .insertContent('<p dir="rtl"><strong>סיכום AI מהמצגת</strong></p>')
             .insertContent(safe)
             .run();
+        },
+        insertClassNoteImage(attachmentId: string, alt?: string) {
+          const ed = editor;
+          if (!ed) return;
+          ed.chain()
+            .focus()
+            .insertContent({
+              type: "classNoteImage",
+              attrs: { attachmentId, alt: alt?.trim() || "Screenshot" }
+            })
+            .run();
         }
       }),
       [editor]
@@ -193,12 +217,61 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
 
     useEffect(() => {
       if (!editor) return;
+      const stor = editor.storage as { classNoteImage?: { noteId: string } };
+      stor.classNoteImage!.noteId = noteId;
+    }, [editor, noteId]);
+
+    useEffect(() => {
+      if (!editor) return;
+      const base = editor.options.editorProps ?? {};
+      const prevAttrs = (base.attributes ?? {}) as Record<string, string>;
       editor.setOptions({
         editorProps: {
-          ...editor.options.editorProps,
+          ...base,
           attributes: {
-            ...(editor.options.editorProps.attributes as Record<string, string>),
-            dir: textDir
+            ...prevAttrs,
+            class:
+              "prose-note-editor max-w-none px-3 py-2 text-sm leading-relaxed text-slate-800 focus:outline-none dark:text-slate-100",
+            dir: textDir,
+            spellCheck: "true"
+          },
+          handlePaste(view, event) {
+            const cd = event.clipboardData;
+            if (!cd) return false;
+            const fileItem = [...cd.items].find((i) => i.kind === "file" && (i.type || "").startsWith("image/"));
+            const file = fileItem?.getAsFile();
+            if (!file || !isClassNoteImageFile(file)) return false;
+            if (file.size > CLASS_NOTE_IMAGE_MAX_BYTES) return false;
+            event.preventDefault();
+            void (async () => {
+              const id = await registerImageRef.current?.(file);
+              if (!id) return;
+              const type = view.state.schema.nodes.classNoteImage;
+              if (!type) return;
+              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot" });
+              const pos = view.state.selection.from;
+              view.dispatch(view.state.tr.insert(pos, node));
+            })();
+            return true;
+          },
+          handleDrop(view, event, _slice, moved) {
+            if (moved) return false;
+            const dt = event.dataTransfer;
+            if (!dt?.files?.length) return false;
+            const file = [...dt.files].find((f) => isClassNoteImageFile(f));
+            if (!file || file.size > CLASS_NOTE_IMAGE_MAX_BYTES) return false;
+            event.preventDefault();
+            void (async () => {
+              const id = await registerImageRef.current?.(file);
+              if (!id) return;
+              const type = view.state.schema.nodes.classNoteImage;
+              if (!type) return;
+              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot" });
+              const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
+              const pos = coords ? coords.pos : view.state.selection.from;
+              view.dispatch(view.state.tr.insert(pos, node));
+            })();
+            return true;
           }
         }
       });
@@ -221,6 +294,33 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
       }
       editor.chain().focus().extendMarkRange("link").setLink({ href: trimmed }).run();
     }, [editor]);
+
+    const insertImageFromFile = useCallback(
+      async (file: File) => {
+        const ed = editor;
+        if (!ed) return;
+        if (!isClassNoteImageFile(file) || file.size > CLASS_NOTE_IMAGE_MAX_BYTES) return;
+        const id = await registerImageRef.current?.(file);
+        if (!id) return;
+        ed.chain()
+          .focus()
+          .insertContent({
+            type: "classNoteImage",
+            attrs: { attachmentId: id, alt: file.name || "Screenshot" }
+          })
+          .run();
+      },
+      [editor]
+    );
+
+    const onToolbarImageChange = useCallback(
+      (event: ChangeEvent<HTMLInputElement>) => {
+        const f = event.target.files?.[0];
+        event.target.value = "";
+        if (f) void insertImageFromFile(f);
+      },
+      [insertImageFromFile]
+    );
 
     if (!editor) {
       return (
@@ -303,6 +403,21 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
           <span className="mx-1 h-6 w-px shrink-0 bg-slate-200 dark:bg-white/15" />
           <ToolbarBtn title="Link" onAction={setLink} active={editor.isActive("link")}>
             <Link2 className="h-4 w-4" />
+          </ToolbarBtn>
+          <input
+            ref={imageFileRef}
+            type="file"
+            accept={CLASS_NOTE_IMAGE_ACCEPT}
+            className="sr-only"
+            aria-hidden
+            tabIndex={-1}
+            onChange={onToolbarImageChange}
+          />
+          <ToolbarBtn
+            title="Insert screenshot (PNG, JPEG, WebP)"
+            onAction={() => imageFileRef.current?.click()}
+          >
+            <ImagePlus className="h-4 w-4" />
           </ToolbarBtn>
           <ToolbarBtn title="Clear character styles" onAction={() => editor.chain().focus().unsetAllMarks().run()}>
             <RemoveFormatting className="h-4 w-4" />

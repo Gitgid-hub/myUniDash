@@ -55,9 +55,10 @@ export function sanitizeClassNoteBodyHtml(html: string): string {
       "li",
       "a",
       "hr",
-      "span"
+      "span",
+      "img"
     ],
-    ALLOWED_ATTR: ["href", "target", "rel", "dir", "style", "class"]
+    ALLOWED_ATTR: ["href", "target", "rel", "dir", "style", "class", "data-classnote-img", "alt", "loading", "decoding"]
   });
 }
 

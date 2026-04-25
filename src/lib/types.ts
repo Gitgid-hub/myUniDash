@@ -67,6 +67,15 @@ export interface RecurrenceRule {
   interval: number;
 }
 
+/** File bytes live in IndexedDB (`task-attachment-blobs`); metadata syncs in persisted state. */
+export interface TaskAttachment {
+  id: ID;
+  name: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string;
+}
+
 export interface Task {
   id: ID;
   title: string;
@@ -78,7 +87,7 @@ export interface Task {
   effort: number;
   tags: string[];
   recurring?: RecurrenceRule;
-  attachments: string[];
+  attachments: TaskAttachment[];
   completedAt?: string;
   createdAt: string;
   updatedAt: string;
@@ -138,7 +147,7 @@ export interface ClassNote {
   status: ClassNoteStatus;
   createdAt: string;
   updatedAt: string;
-  /** Slides / PDFs attached to this note (binary stored locally per browser). */
+  /** Decks / PDFs + screenshot images (binary in IndexedDB per browser; images may also appear inline in `bodyMarkdown`). */
   attachments: ClassNoteAttachment[];
 }
 

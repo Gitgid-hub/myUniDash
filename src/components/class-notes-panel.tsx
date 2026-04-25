@@ -1,9 +1,9 @@
 "use client";
 
 import clsx from "clsx";
-import { ExternalLink, FileText, Paperclip, Plus, Presentation, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { ExternalLink, FileText, Image as ImageIcon, Paperclip, Plus, Presentation, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, CSSProperties } from "react";
+import type { ChangeEvent, CSSProperties, MouseEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import { AnkiExportIcon } from "@/components/anki-export-icon";
 import { ClassNoteRichEditor, type ClassNoteRichEditorHandle } from "@/components/class-note-rich-editor";
@@ -14,17 +14,22 @@ import {
   stripHtmlToPreview
 } from "@/lib/class-note-body";
 import { extractTextFromPresentationFile } from "@/lib/presentation-text-extract";
+import { hydrateClassNoteImagesInRoot } from "@/lib/class-note-image-hydrate";
 import {
+  CLASS_NOTE_IMAGE_MAX_BYTES,
   CLASS_NOTE_PRESENTATION_ACCEPT,
   CLASS_NOTE_PRESENTATION_MAX_BYTES,
   createClassNoteAttachmentMeta,
   deleteClassNoteAttachmentBlob,
   getClassNoteAttachmentBlob,
+  isClassNoteImageAttachment,
+  isClassNoteImageFile,
   isPresentationFile,
   saveClassNoteAttachmentBlob
 } from "@/lib/class-note-attachment-blobs";
 import { formatDateKeyLocal } from "@/lib/date";
-import type { ClassNote, ClassNoteAttachment, Course } from "@/lib/types";
+import { pushSchoolOsToast } from "@/lib/global-app-toasts";
+import type { ClassNote, ClassNoteAttachment, ClassNoteEditorTextDir, Course } from "@/lib/types";
 import { Badge, Button, Panel } from "@/components/ui";
 
 function softCourseStyle(color: string): CSSProperties {
@@ -57,6 +62,32 @@ function formatFileBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ClassNoteBodyPreview({
+  html,
+  noteId,
+  textDir
+}: {
+  html: string;
+  noteId: string;
+  textDir: ClassNoteEditorTextDir;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.innerHTML = sanitizeClassNoteBodyHtml(html);
+    return hydrateClassNoteImagesInRoot(el, noteId);
+  }, [html, noteId]);
+
+  return (
+    <div
+      ref={containerRef}
+      dir={textDir === "auto" ? "auto" : textDir}
+      className="[&_a]:text-sky-600 [&_a]:underline dark:[&_a]:text-sky-400 [&_code]:rounded-md [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs dark:[&_code]:bg-white/10 [&_img]:mx-auto [&_img]:my-2 [&_img]:block [&_img]:max-h-[min(72vh,720px)] [&_img]:max-w-full [&_img]:rounded-lg [&_img]:border [&_img]:border-slate-200/80 dark:[&_img]:border-white/10 [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+    />
+  );
 }
 
 const STACK_VISIBLE = 5;
@@ -104,6 +135,13 @@ function CourseNotesStack({
     [onSelectNote]
   );
 
+  const handleRootMouseLeave = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (!expanded) return;
+    const rel = event.nativeEvent.relatedTarget;
+    if (rel && rel instanceof Node && rootRef.current?.contains(rel)) return;
+    setExpanded(false);
+  }, [expanded]);
+
   if (list.length === 0) {
     return <div className="px-5 py-6 text-sm text-slate-500 dark:text-slate-400">No notes yet for this course.</div>;
   }
@@ -111,14 +149,62 @@ function CourseNotesStack({
   if (list.length === 1) {
     const note = list[0];
     return (
-      <div className="border-t border-slate-200/70 px-5 py-3 dark:border-white/10">
-        <NoteRowButton note={note} openNoteId={openNoteId} onSelectNote={handleSelect} />
+      <div className="border-t border-slate-200/70 dark:border-white/10">
+        <div className="px-5 pb-4 pt-4">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center rounded-full border border-sky-200/90 bg-sky-50 px-2.5 py-0.5 text-[11px] font-semibold text-sky-900 dark:border-sky-500/35 dark:bg-sky-500/15 dark:text-sky-100">
+              1 note in this course
+            </span>
+          </div>
+          <div className="relative mx-auto max-w-full overflow-visible" role="list" aria-label="1 class note in this course">
+            <button
+              type="button"
+              role="listitem"
+              onClick={() => handleSelect(note.id)}
+              className={clsx(
+                "relative left-0 right-0 w-full rounded-xl border border-slate-200/90 bg-white/95 px-3 py-2.5 text-left shadow-md backdrop-blur-sm transition hover:brightness-[1.02] dark:border-white/12 dark:bg-[#15181d]/95",
+                openNoteId === note.id && "ring-2 ring-sky-500/50 dark:ring-sky-400/40"
+              )}
+              style={{ boxShadow: "0 4px 14px rgba(0,0,0,0.12)" }}
+            >
+              <div className="flex items-start gap-2">
+                <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-xs font-semibold text-slate-900 dark:text-white">{note.title}</span>
+                    {note.status === "draft" ? (
+                      <span className="shrink-0 rounded-full border border-amber-200/80 bg-amber-50 px-1.5 py-0 text-[10px] font-medium text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                        Draft
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500">{note.occurredOn}</span>
+                </div>
+              </div>
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
 
+  const peekCount = Math.min(list.length, STACK_VISIBLE);
+  const xStep = list.length <= 3 ? 14 : 11;
+  const yStep = list.length <= 3 ? 22 : 16;
+  const stackVisualHeight = 54 + (peekCount - 1) * yStep;
+
+  const stackSummaryTitles = list
+    .slice(0, 4)
+    .map((n) => n.title.trim() || n.occurredOn)
+    .join(" · ");
+  const stackSummarySuffix = list.length > 4 ? ` · +${list.length - 4} more` : "";
+
   return (
-    <div ref={rootRef} className="border-t border-slate-200/70 dark:border-white/10">
+    <div
+      ref={rootRef}
+      className="border-t border-slate-200/70 dark:border-white/10"
+      onMouseLeave={handleRootMouseLeave}
+    >
       {!expanded ? (
         <div
           className="px-5 pb-4 pt-4"
@@ -126,23 +212,26 @@ function CourseNotesStack({
           onFocusCapture={() => setExpanded(true)}
         >
           <div className="mb-2 flex flex-wrap items-center gap-2">
-            <p className="text-[11px] text-slate-400 dark:text-slate-500">Hover stack to expand, or</p>
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              className="rounded-full border border-slate-200/80 bg-slate-50 px-2.5 py-0.5 text-[11px] font-medium text-slate-600 transition hover:bg-slate-100 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/10"
-            >
-              Show all ({list.length})
-            </button>
+            <span className="inline-flex items-center rounded-full border border-sky-200/90 bg-sky-50 px-2.5 py-0.5 text-[11px] font-semibold text-sky-900 dark:border-sky-500/35 dark:bg-sky-500/15 dark:text-sky-100">
+              {list.length} notes in this course
+            </span>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Hover stack to expand</p>
           </div>
+          <p className="mb-2 line-clamp-2 text-[10px] leading-snug text-slate-500 dark:text-slate-400" title={list.map((n) => n.title).join("\n")}>
+            {stackSummaryTitles}
+            {stackSummarySuffix}
+          </p>
           <div
             className="relative mx-auto max-w-full overflow-visible"
-            style={{ height: 48 + Math.min(list.length, STACK_VISIBLE) * 8 }}
+            role="list"
+            aria-label={`${list.length} class notes stacked; hover or use Show all to expand`}
+            style={{ height: stackVisualHeight }}
           >
             {list.slice(0, STACK_VISIBLE).map((note, i) => (
               <button
                 key={note.id}
                 type="button"
+                role="listitem"
                 onClick={() => handleSelect(note.id)}
                 className={clsx(
                   "absolute left-0 right-0 rounded-xl border border-slate-200/90 bg-white/95 px-3 py-2.5 text-left shadow-md backdrop-blur-sm transition hover:brightness-[1.02] dark:border-white/12 dark:bg-[#15181d]/95",
@@ -150,7 +239,7 @@ function CourseNotesStack({
                 )}
                 style={{
                   zIndex: STACK_VISIBLE - i + 1,
-                  transform: `translate(${i * 10}px, ${i * 7}px)`,
+                  transform: `translate(${i * xStep}px, ${i * yStep}px)`,
                   boxShadow: "0 4px 14px rgba(0,0,0,0.12)"
                 }}
               >
@@ -249,11 +338,11 @@ function ClassNoteAttachmentsBar({
   generatingAttachmentId: string | null;
   summaryError: string | null;
 }) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const fileInputId = useId();
+  const deckFileRef = useRef<HTMLInputElement>(null);
+  const deckInputId = useId();
   const noteRef = useRef(note);
   noteRef.current = note;
-  const [busy, setBusy] = useState(false);
+  const [deckBusy, setDeckBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [blobReady, setBlobReady] = useState<Record<string, boolean>>({});
@@ -283,9 +372,8 @@ function ClassNoteAttachmentsBar({
     };
   }, [note.id, attachmentSig]);
 
-  const handleFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+  const handlePresentationFiles = async (event: ChangeEvent<HTMLInputElement>) => {
     const input = event.target;
-    /** Snapshot before clearing `value` — clearing first empties the live `FileList` in some browsers. */
     const list = Array.from(input.files ?? []);
     input.value = "";
     if (!list.length) return;
@@ -305,7 +393,7 @@ function ClassNoteAttachmentsBar({
         return;
       }
     }
-    setBusy(true);
+    setDeckBusy(true);
     try {
       const meta: ClassNoteAttachment[] = [];
       const n = noteRef.current;
@@ -338,7 +426,7 @@ function ClassNoteAttachmentsBar({
           : "Could not store the file in this browser. Check site storage permissions."
       );
     } finally {
-      setBusy(false);
+      setDeckBusy(false);
     }
   };
 
@@ -364,6 +452,76 @@ function ClassNoteAttachmentsBar({
     window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
   };
 
+  const renderRow = (att: ClassNoteAttachment, showAi: boolean) => {
+    const probe = blobReady[att.id];
+    const definitelyMissing = probe === false;
+    const verified = probe === true;
+    const isImg = isClassNoteImageAttachment(att);
+    return (
+      <li
+        key={att.id}
+        className="flex flex-col gap-2 rounded-xl border border-slate-200/80 bg-white/90 p-2 text-xs dark:border-white/10 dark:bg-[#15181d]/95 sm:flex-row sm:items-stretch sm:gap-0 sm:p-0"
+      >
+        <button
+          type="button"
+          disabled={definitelyMissing}
+          onClick={() => void openAttachment(att)}
+          className={clsx(
+            "flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2.5 text-left transition sm:py-2.5",
+            definitelyMissing
+              ? "cursor-not-allowed opacity-70"
+              : "cursor-pointer hover:bg-sky-500/10 dark:hover:bg-sky-400/10"
+          )}
+        >
+          {isImg ? (
+            <ImageIcon className="h-4 w-4 shrink-0 text-sky-500 dark:text-sky-400" aria-hidden />
+          ) : (
+            <Paperclip className="h-4 w-4 shrink-0 text-sky-500 dark:text-sky-400" aria-hidden />
+          )}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-medium text-sky-700 underline decoration-sky-500/50 underline-offset-2 dark:text-sky-200">
+              {att.name}
+            </span>
+            <span className="mt-0.5 block text-[10px] text-slate-500 dark:text-slate-400">
+              {formatFileBytes(att.size)}
+              {definitelyMissing
+                ? " · File not stored on this device"
+                : verified
+                  ? " · Click to open in a new tab"
+                  : " · Click to open (verifying…)"}
+            </span>
+          </span>
+          {!definitelyMissing ? (
+            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-sky-500 dark:text-sky-400" aria-hidden />
+          ) : null}
+        </button>
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200/80 pt-2 sm:border-t-0 sm:border-l sm:border-slate-200/80 sm:px-2 sm:py-1.5 dark:border-white/10">
+          {showAi ? (
+            <button
+              type="button"
+              disabled={!verified || generatingAttachmentId === att.id}
+              onClick={() => void onGenerateFromAttachment(att)}
+              className={clsx(
+                "inline-flex items-center gap-1.5 rounded-xl border-2 border-amber-400/95 bg-gradient-to-br from-amber-400/35 via-orange-500/30 to-amber-600/35 px-3 py-2 text-[11px] font-bold text-amber-950 shadow-[0_0_20px_rgba(251,146,60,0.7),0_0_42px_rgba(249,115,22,0.35)] transition hover:brightness-110 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-400/55 dark:from-amber-500/30 dark:via-orange-600/35 dark:to-amber-700/35 dark:text-amber-50 dark:shadow-[0_0_24px_rgba(251,146,60,0.5),0_0_52px_rgba(234,88,12,0.28)]"
+              )}
+            >
+              <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {generatingAttachmentId === att.id ? "מייצר…" : "סיכום AI"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label={`Remove ${att.name}`}
+            onClick={() => void removeAttachment(att)}
+            className="rounded-lg p-2.5 text-slate-400 transition hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </li>
+    );
+  };
+
   return (
     <div className="shrink-0 border-t border-slate-200/80 bg-slate-50/40 px-4 py-3 dark:border-white/10 dark:bg-black/20 sm:px-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -375,36 +533,38 @@ function ClassNoteAttachmentsBar({
           </span>
           {attachments.length > 0 ? (
             <Badge className="border-sky-200/80 bg-sky-50 text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-100">
-              {attachments.length} attached
+              {attachments.length}
             </Badge>
           ) : null}
         </div>
         <div className="flex items-center gap-2">
           <input
-            ref={fileRef}
-            id={fileInputId}
+            ref={deckFileRef}
+            id={deckInputId}
             type="file"
             multiple
-            disabled={busy}
+            disabled={deckBusy}
             className="sr-only"
             accept={CLASS_NOTE_PRESENTATION_ACCEPT}
-            onChange={handleFiles}
+            onChange={handlePresentationFiles}
           />
           <label
-            htmlFor={fileInputId}
+            htmlFor={deckInputId}
             className={clsx(
               "inline-flex h-9 cursor-pointer select-none items-center gap-1.5 rounded-full border border-slate-200 bg-white/70 px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200 dark:hover:bg-white/[0.06]",
-              busy && "pointer-events-none cursor-wait opacity-60"
+              deckBusy && "pointer-events-none cursor-wait opacity-60"
             )}
           >
             <Upload className="h-3.5 w-3.5 shrink-0" aria-hidden />
-            {busy ? "Uploading…" : "Upload"}
+            {deckBusy ? "Uploading…" : "Upload"}
           </label>
         </div>
       </div>
       <p className="mt-1.5 text-[10px] leading-snug text-slate-400 dark:text-slate-500">
-        Files are kept in this browser (IndexedDB). Names sync with your account; re-upload on another device to open them there.
+        Decks / PDFs: upload above (IndexedDB in this browser). Screenshots: paste or use the image button in the editor (max{" "}
+        {formatFileBytes(CLASS_NOTE_IMAGE_MAX_BYTES)} per image). Names sync with your account.
       </p>
+
       {uploadSuccess ? (
         <p className="mt-2 rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-100">
           {uploadSuccess}
@@ -414,75 +574,15 @@ function ClassNoteAttachmentsBar({
       {summaryError ? (
         <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{summaryError}</p>
       ) : null}
-      <ul className="mt-3 space-y-2" aria-label="Attached presentations">
+
+      <ul className="mt-3 space-y-2" aria-label="Attached files">
         {attachments.length === 0 ? (
           <li className="rounded-xl border border-dashed border-slate-300/80 px-3 py-3 text-center text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
-            No file attached yet. Choose <span className="font-medium text-slate-700 dark:text-slate-200">Upload</span> — you will
-            see it listed here with a paperclip.
+            No files yet. Use <span className="font-medium text-slate-700 dark:text-slate-200">Upload</span> for PDF or slides, or
+            paste / toolbar image in the editor for screenshots.
           </li>
         ) : (
-          attachments.map((att) => {
-            const probe = blobReady[att.id];
-            const definitelyMissing = probe === false;
-            const verified = probe === true;
-            return (
-              <li
-                key={att.id}
-                className="flex flex-col gap-2 rounded-xl border border-slate-200/80 bg-white/90 p-2 text-xs dark:border-white/10 dark:bg-[#15181d]/95 sm:flex-row sm:items-stretch sm:gap-0 sm:p-0"
-              >
-                <button
-                  type="button"
-                  disabled={definitelyMissing}
-                  onClick={() => void openAttachment(att)}
-                  className={clsx(
-                    "flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2.5 text-left transition sm:py-2.5",
-                    definitelyMissing
-                      ? "cursor-not-allowed opacity-70"
-                      : "cursor-pointer hover:bg-sky-500/10 dark:hover:bg-sky-400/10"
-                  )}
-                >
-                  <Paperclip className="h-4 w-4 shrink-0 text-sky-500 dark:text-sky-400" aria-hidden />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium text-sky-700 underline decoration-sky-500/50 underline-offset-2 dark:text-sky-200">
-                      {att.name}
-                    </span>
-                    <span className="mt-0.5 block text-[10px] text-slate-500 dark:text-slate-400">
-                      {formatFileBytes(att.size)}
-                      {definitelyMissing
-                        ? " · File not stored on this device"
-                        : verified
-                          ? " · Click to open in a new tab"
-                          : " · Click to open (verifying…)"}
-                    </span>
-                  </span>
-                  {!definitelyMissing ? (
-                    <ExternalLink className="h-3.5 w-3.5 shrink-0 text-sky-500 dark:text-sky-400" aria-hidden />
-                  ) : null}
-                </button>
-                <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200/80 pt-2 sm:border-t-0 sm:border-l sm:border-slate-200/80 sm:px-2 sm:py-1.5 dark:border-white/10">
-                  <button
-                    type="button"
-                    disabled={!verified || generatingAttachmentId === att.id}
-                    onClick={() => void onGenerateFromAttachment(att)}
-                    className={clsx(
-                      "inline-flex items-center gap-1.5 rounded-xl border-2 border-amber-400/95 bg-gradient-to-br from-amber-400/35 via-orange-500/30 to-amber-600/35 px-3 py-2 text-[11px] font-bold text-amber-950 shadow-[0_0_20px_rgba(251,146,60,0.7),0_0_42px_rgba(249,115,22,0.35)] transition hover:brightness-110 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-400/55 dark:from-amber-500/30 dark:via-orange-600/35 dark:to-amber-700/35 dark:text-amber-50 dark:shadow-[0_0_24px_rgba(251,146,60,0.5),0_0_52px_rgba(234,88,12,0.28)]"
-                    )}
-                  >
-                    <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                    {generatingAttachmentId === att.id ? "מייצר…" : "סיכום AI"}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${att.name}`}
-                    onClick={() => void removeAttachment(att)}
-                    className="rounded-lg p-2.5 text-slate-400 transition hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </li>
-            );
-          })
+          attachments.map((att) => renderRow(att, !isClassNoteImageAttachment(att)))
         )}
       </ul>
     </div>
@@ -511,64 +611,145 @@ function ClassNoteFullscreenEditor({
   const courseLine = course ? [course.code, course.name].filter(Boolean).join(" · ") : undefined;
   const attachmentCount = (note.attachments ?? []).length;
   const richEditorRef = useRef<ClassNoteRichEditorHandle>(null);
+  const noteRef = useRef(note);
+  noteRef.current = note;
   const [generatingAttachmentId, setGeneratingAttachmentId] = useState<string | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
-  const [ankiCsvBusy, setAnkiCsvBusy] = useState(false);
+  const [ankiExportInFlight, setAnkiExportInFlight] = useState(false);
+  const [ankiGuidanceOpen, setAnkiGuidanceOpen] = useState(false);
   const [ankiCsvError, setAnkiCsvError] = useState<string | null>(null);
+  const ankiExportLockRef = useRef(false);
+  const editorMountedRef = useRef(true);
+  useEffect(() => {
+    editorMountedRef.current = true;
+    return () => {
+      editorMountedRef.current = false;
+    };
+  }, []);
 
-  const hasAnkiSourceText = classNoteBodyToPlainText(note.bodyMarkdown).length > 0;
+  const ankiSourceText = classNoteBodyToPlainText(note.bodyMarkdown).trim();
+  const hasAnkiSourceText = ankiSourceText.length > 0;
 
-  const handleAnkiCsvDownload = useCallback(async () => {
-    setAnkiCsvError(null);
-    setAnkiCsvBusy(true);
-    try {
-      const res = await fetch(`${window.location.origin}/api/class-notes/anki-csv`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          bodyMarkdown: note.bodyMarkdown,
-          noteTitle: note.title,
-          courseName: course?.name ?? "",
-          occurredOn: note.occurredOn
-        })
+  const handleAnkiCsvDownload = useCallback(() => {
+    if (ankiExportLockRef.current) {
+      pushSchoolOsToast({
+        kind: "success",
+        message: "Anki export is already running in the background."
       });
-      if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(typeof data.error === "string" ? data.error : res.statusText);
-      }
-      const blob = await res.blob();
-      const base = note.title
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/gi, "-")
-        .replace(/^-|-$/g, "")
-        .slice(0, 48);
-      const fname = `anki-${base || "class-note"}-${note.occurredOn}.csv`;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fname;
-      a.rel = "noopener";
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      const net =
-        e instanceof TypeError &&
-        (e.message === "Failed to fetch" || e.message === "Load failed" || e.message.includes("fetch"));
-      setAnkiCsvError(
-        net
+      return;
+    }
+    if (!ankiSourceText) {
+      const msg = "Add some note text first, then generate Anki CSV.";
+      setAnkiCsvError(msg);
+      pushSchoolOsToast({ kind: "error", message: msg });
+      return;
+    }
+    ankiExportLockRef.current = true;
+    setAnkiCsvError(null);
+    setAnkiGuidanceOpen(true);
+    setAnkiExportInFlight(true);
+    pushSchoolOsToast({
+      kind: "success",
+      message: "Started Anki CSV export in the background. You can keep working."
+    });
+
+    const bodyMarkdown = note.bodyMarkdown;
+    const noteTitle = note.title;
+    const occurredOn = note.occurredOn;
+    const courseName = course?.name ?? "";
+    const courseCode = course?.code ?? "";
+
+    void (async () => {
+      try {
+        const res = await fetch(`${window.location.origin}/api/class-notes/anki-csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            bodyMarkdown,
+            noteTitle,
+            courseName,
+            courseCode,
+            occurredOn
+          })
+        });
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(typeof data.error === "string" ? data.error : res.statusText);
+        }
+        const blob = await res.blob();
+        const base = noteTitle
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/gi, "-")
+          .replace(/^-|-$/g, "")
+          .slice(0, 48);
+        const codePart = courseCode
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/gi, "-")
+          .replace(/^-|-$/g, "")
+          .slice(0, 16);
+        const fname = `anki-${codePart || "course"}-${base || "class-note"}-${occurredOn}.csv`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fname;
+        a.rel = "noopener";
+        a.click();
+        URL.revokeObjectURL(url);
+        pushSchoolOsToast({
+          kind: "success",
+          message: "Anki CSV is ready — your download should start. You can keep working; this notice fades on its own."
+        });
+      } catch (e) {
+        const net =
+          e instanceof TypeError &&
+          (e.message === "Failed to fetch" || e.message === "Load failed" || e.message.includes("fetch"));
+        const longMsg = net
           ? "Network error (Failed to fetch): the browser could not reach your Next server. Start or restart `npm run dev`, open the app from the same URL (e.g. http://localhost:3000), and avoid mixing http vs https or 127.0.0.1 vs localhost unless you always use the same one. Ad blockers can sometimes block API calls—try disabling for this site."
           : e instanceof Error
             ? e.message
-            : String(e)
-      );
-    } finally {
-      setAnkiCsvBusy(false);
-    }
-  }, [course?.name, note.bodyMarkdown, note.occurredOn, note.title]);
+            : String(e);
+        if (editorMountedRef.current) {
+          setAnkiCsvError(longMsg);
+        }
+        pushSchoolOsToast({
+          kind: "error",
+          message: net ? "Anki export failed: network error (could not reach the server)." : `Anki export failed: ${e instanceof Error ? e.message : String(e)}`
+        });
+      } finally {
+        ankiExportLockRef.current = false;
+        if (editorMountedRef.current) {
+          setAnkiExportInFlight(false);
+        }
+      }
+    })();
+  }, [ankiSourceText, course?.code, course?.name, note.bodyMarkdown, note.occurredOn, note.title]);
+
+  const handleRegisterEmbeddedImage = useCallback(
+    async (file: File) => {
+      if (!isClassNoteImageFile(file) || file.size > CLASS_NOTE_IMAGE_MAX_BYTES) return null;
+      const n = noteRef.current;
+      const attId = `att_${Math.random().toString(36).slice(2, 12)}`;
+      try {
+        await saveClassNoteAttachmentBlob(n.id, attId, file);
+        const verify = await getClassNoteAttachmentBlob(n.id, attId);
+        if (!verify || verify.size < 1) return null;
+        const meta = createClassNoteAttachmentMeta(file, attId);
+        const merged = [...(n.attachments ?? []), meta];
+        onUpdateNote({ id: n.id, attachments: merged });
+        noteRef.current = { ...n, attachments: merged };
+        return attId;
+      } catch {
+        return null;
+      }
+    },
+    [onUpdateNote]
+  );
 
   const handleGenerateFromAttachment = useCallback(
     async (att: ClassNoteAttachment) => {
+      if (isClassNoteImageAttachment(att)) return;
       setSummaryError(null);
       setGeneratingAttachmentId(att.id);
       try {
@@ -617,6 +798,40 @@ function ClassNoteFullscreenEditor({
       aria-modal="true"
       aria-labelledby="class-note-title"
     >
+      {ankiGuidanceOpen ? (
+        <div
+          className="fixed inset-0 z-[55] flex items-center justify-center bg-black/50 p-4 backdrop-blur-[2px]"
+          role="presentation"
+          onClick={() => setAnkiGuidanceOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="anki-export-guidance-title"
+            className="max-w-md rounded-2xl border border-slate-200/90 bg-white p-5 text-slate-900 shadow-2xl dark:border-white/10 dark:bg-[#12151a] dark:text-slate-100"
+            onClick={(ev) => ev.stopPropagation()}
+          >
+            <h2 id="anki-export-guidance-title" className="text-base font-semibold">
+              Anki export running
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+              We&apos;re generating your CSV in the background. You can keep editing this note, switch views, or work elsewhere in School OS — nothing else is blocked.
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+              When the file is ready, your browser will start the download and a short notification will appear (also if something goes wrong).
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAnkiGuidanceOpen(false)}
+                className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="mx-auto flex h-[100dvh] min-h-0 w-full max-w-[56rem] flex-1 flex-col overflow-hidden">
         <div className="flex shrink-0 items-start justify-between gap-2 border-b border-slate-200/80 px-5 py-4 dark:border-white/10 sm:px-8">
           <div className="min-w-0 flex-1">
@@ -638,7 +853,7 @@ function ClassNoteFullscreenEditor({
             {attachmentCount > 0 ? (
               <span
                 className="inline-flex items-center gap-1 rounded-full border border-sky-200/90 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-900 dark:border-sky-500/35 dark:bg-sky-500/15 dark:text-sky-100"
-                title={`${attachmentCount} presentation(s) attached — scroll to Presentations to open`}
+                title={`${attachmentCount} file(s) attached — scroll down for presentations & screenshots`}
               >
                 <Paperclip className="h-3.5 w-3.5" aria-hidden />
                 {attachmentCount}
@@ -646,14 +861,14 @@ function ClassNoteFullscreenEditor({
             ) : null}
             <button
               type="button"
-              disabled={ankiCsvBusy || !hasAnkiSourceText}
-              aria-label={ankiCsvBusy ? "Generating Anki CSV…" : "Download Anki CSV"}
+              disabled={ankiExportInFlight}
+              aria-label={ankiExportInFlight ? "Generating Anki CSV…" : "Download Anki CSV"}
               title={
                 hasAnkiSourceText
-                  ? "AI → CSV for Anki (Front, Back, Tags). Front/Back include RTL/LTR HTML — in Anki import, turn on “Allow HTML in fields” and use a Basic note type."
+                  ? "AI → Anki CSV in the background (Front, Back, Tags + course number). Import with “Allow HTML in fields” and a Basic note type; drop the CourseNumber column in Anki if you map only three fields."
                   : "Add note content first"
               }
-              onClick={() => void handleAnkiCsvDownload()}
+              onClick={handleAnkiCsvDownload}
               className={clsx(
                 "rounded-full p-2 text-sky-600 transition hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-40 dark:text-sky-400"
               )}
@@ -707,6 +922,8 @@ function ClassNoteFullscreenEditor({
               <ClassNoteRichEditor
                 ref={richEditorRef}
                 key={note.id}
+                noteId={note.id}
+                onRegisterEmbeddedImage={handleRegisterEmbeddedImage}
                 body={note.bodyMarkdown}
                 onBodyChange={(html) => onUpdateNote({ id: note.id, bodyMarkdown: html })}
                 placeholder="Write your class summary…"
@@ -717,10 +934,10 @@ function ClassNoteFullscreenEditor({
               <div className="prose-note-preview min-h-[min(42vh,360px)] overflow-y-auto rounded-2xl border border-slate-200/80 bg-white/40 p-4 text-sm leading-relaxed text-slate-800 dark:border-white/10 dark:bg-black/15 dark:text-slate-100 sm:min-h-[min(38vh,320px)] sm:p-5 [&_a]:text-sky-600 [&_a]:underline dark:[&_a]:text-sky-400">
                 {note.bodyMarkdown.trim() ? (
                   looksLikeStoredHtml(note.bodyMarkdown) ? (
-                    <div
-                      dir={note.editorTextDir === "auto" ? "auto" : note.editorTextDir}
-                      className="[&_a]:text-sky-600 [&_a]:underline dark:[&_a]:text-sky-400 [&_code]:rounded-md [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs dark:[&_code]:bg-white/10 [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
-                      dangerouslySetInnerHTML={{ __html: sanitizeClassNoteBodyHtml(note.bodyMarkdown) }}
+                    <ClassNoteBodyPreview
+                      html={note.bodyMarkdown}
+                      noteId={note.id}
+                      textDir={note.editorTextDir ?? "auto"}
                     />
                   ) : (
                     <div className="[&_a]:text-sky-600 [&_a]:underline dark:[&_a]:text-sky-400 [&_code]:rounded-md [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs dark:[&_code]:bg-white/10 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_li]:my-0.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5">

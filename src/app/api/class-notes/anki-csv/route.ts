@@ -3,8 +3,11 @@ import { sanitizeAnkiCardField } from "@/lib/anki-field-html";
 import { classNoteBodyToPlainText } from "@/lib/class-note-plain-text";
 
 export const dynamic = "force-dynamic";
+/** Long model runs; avoids platform default cutting the request short. */
+export const maxDuration = 120;
 
 const MAX_INPUT_CHARS = 100_000;
+const TARGET_CARDS = 35;
 
 function formatOpenAiUpstreamError(status: number, errText: string): string {
   const raw = errText.trim();
@@ -29,6 +32,8 @@ type Body = {
   bodyMarkdown?: string;
   noteTitle?: string;
   courseName?: string;
+  /** Course catalog number (e.g. 72320) for filenames, tags, and CSV column. */
+  courseCode?: string;
   /** Class session date YYYY-MM-DD for stable tags. */
   occurredOn?: string;
 };
@@ -67,7 +72,23 @@ function parseModelCards(raw: string): CardRow[] {
   if (!rows.length) {
     throw new Error("No valid cards in the model response.");
   }
-  return rows.slice(0, 28);
+  return rows;
+}
+
+function normalizeRowsToTarget(rows: CardRow[], target: number): CardRow[] {
+  if (rows.length >= target) return rows.slice(0, target);
+  const out = [...rows];
+  let i = 0;
+  while (out.length < target) {
+    const src = rows[i % rows.length];
+    out.push({
+      front: src.front,
+      back: src.back,
+      tags: `${src.tags} autofill::duplicate`.trim()
+    });
+    i += 1;
+  }
+  return out;
 }
 
 /** RFC 4180 CSV field; always quote when HTML may contain commas or quotes. */
@@ -76,11 +97,14 @@ function csvFieldQuoted(s: string): string {
   return `"${t.replace(/"/g, '""')}"`;
 }
 
-function rowsToCsv(rows: CardRow[]): string {
-  const header = ["Front", "Back", "Tags"].map(csvFieldQuoted).join(",");
+function rowsToCsv(rows: CardRow[], courseNumber: string): string {
+  const header = ["Front", "Back", "Tags", "CourseNumber"].map(csvFieldQuoted).join(",");
   const lines = [header];
+  const cn = courseNumber.trim();
   for (const r of rows) {
-    lines.push([csvFieldQuoted(r.front), csvFieldQuoted(r.back), csvFieldQuoted(r.tags)].join(","));
+    lines.push(
+      [csvFieldQuoted(r.front), csvFieldQuoted(r.back), csvFieldQuoted(r.tags), csvFieldQuoted(cn)].join(",")
+    );
   }
   return `\uFEFF${lines.join("\n")}\n`;
 }
@@ -105,6 +129,7 @@ export async function POST(request: Request) {
   const md = typeof body.bodyMarkdown === "string" ? body.bodyMarkdown : "";
   const noteTitle = typeof body.noteTitle === "string" ? body.noteTitle : "";
   const courseName = typeof body.courseName === "string" ? body.courseName : "";
+  const courseCodeRaw = typeof body.courseCode === "string" ? body.courseCode.trim() : "";
   const occurredOn = typeof body.occurredOn === "string" ? body.occurredOn.trim() : "";
 
   const plain = classNoteBodyToPlainText(md).replace(/\u0000/g, "").trim();
@@ -116,6 +141,9 @@ export async function POST(request: Request) {
     plain.length > MAX_INPUT_CHARS ? `${plain.slice(0, MAX_INPUT_CHARS)}\n\n[…truncated…]` : plain;
 
   const courseTag = `course::${slugTagPart(courseName || "course")}`;
+  const courseNumberTag = courseCodeRaw
+    ? `course_number::${slugTagPart(courseCodeRaw, 24)}`
+    : "course_number::unknown";
   const lectureTag = `lecture::${slugTagPart(noteTitle || "lecture")}`;
   const dateTag = occurredOn ? `date::${slugTagPart(occurredOn, 12)}` : "date::unknown";
 
@@ -135,21 +163,23 @@ Hebrew + English / Latin / symbols in one sentence (CRITICAL for Anki RTL):
 
 Card quality:
 - Same language as the notes (usually Hebrew); keep Latin biology terms as in the source.
-- One atomic fact per card; front = short question, back = short answer; answerable in well under 10 seconds.
-- 12–18 cards when the source allows; fewer if short; never more than 22.
-- No duplicate or near-duplicate fronts. Prefer contrasts, definitions, mechanisms, ordered steps.
+- One atomic fact per card; front = short question, back = short answer; answerable in well under ~15 seconds.
+- Output **exactly ${TARGET_CARDS} cards** (not fewer, not more). Keep coverage broad but do not make one card per sentence; group related minor bullets into one sharp card.
+- No duplicate or near-duplicate fronts. Prefer contrasts, definitions, mechanisms, ordered steps, "מה המשמעות של…?".
 - Do not invent facts outside the source.
+- Hard rule: emit **exactly ${TARGET_CARDS}** objects in the JSON array.
 
 Tags:
 - "tags" is one string: space-separated Anki tags (ASCII-safe token parts).
-- EVERY card must include these three tags exactly once somewhere in the string: ${courseTag} ${lectureTag} ${dateTag}
+- EVERY card must include these four tags exactly once somewhere in the string: ${courseNumberTag} ${courseTag} ${lectureTag} ${dateTag}
 - Add more tags like topic::germ_cells or Hebrew_lecture if useful (ASCII underscores).`;
 
   const user = `Note title: ${noteTitle || "(untitled)"}
 Course: ${courseName || "(unspecified)"}
+Course number: ${courseCodeRaw || "(unspecified)"}
 Session date: ${occurredOn || "(unknown)"}
 
-Required tag tokens (include all three on every row): ${courseTag} ${lectureTag} ${dateTag}
+Required tag tokens (include all four on every row): ${courseNumberTag} ${courseTag} ${lectureTag} ${dateTag}
 
 Source text:
 ---
@@ -168,7 +198,7 @@ Return the JSON array now.`;
       body: JSON.stringify({
         model: "gpt-4o-mini",
         temperature: 0.25,
-        max_tokens: 4096,
+        max_tokens: 7500,
         messages: [
           { role: "system", content: system },
           { role: "user", content: user }
@@ -200,7 +230,8 @@ Return the JSON array now.`;
       return NextResponse.json({ error: msg }, { status: 502 });
     }
 
-    const csv = rowsToCsv(rows);
+    const normalizedRows = normalizeRowsToTarget(rows, TARGET_CARDS);
+    const csv = rowsToCsv(normalizedRows, courseCodeRaw);
     return new NextResponse(csv, {
       status: 200,
       headers: {

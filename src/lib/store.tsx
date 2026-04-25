@@ -5,9 +5,22 @@ import { SupabaseStateStore } from "@/lib/cloud-store";
 import { nowIso } from "@/lib/date";
 import { createSeedState } from "@/lib/seed";
 import { LocalStorageStore } from "@/lib/storage";
-import type { ClassNote, Course, ID, MainView, SchoolState, Store, Task, TaskPriority, TaskStatus, WorkBlock } from "@/lib/types";
+import type {
+  ClassNote,
+  Course,
+  ID,
+  MainView,
+  SchoolState,
+  Store,
+  Task,
+  TaskAttachment,
+  TaskPriority,
+  TaskStatus,
+  WorkBlock
+} from "@/lib/types";
 
 interface TaskInput {
+  id?: ID;
   title: string;
   description?: string;
   courseId?: ID | "general";
@@ -16,7 +29,7 @@ interface TaskInput {
   priority?: TaskPriority;
   effort?: number;
   tags?: string[];
-  attachments?: string[];
+  attachments?: TaskAttachment[];
   recurring?: Task["recurring"];
 }
 
@@ -112,10 +125,23 @@ function normalizeClassNote(note: ClassNote): ClassNote {
   };
 }
 
+function isTaskAttachmentLike(x: unknown): x is TaskAttachment {
+  if (!x || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
+  return typeof o.id === "string" && typeof o.name === "string" && typeof o.size === "number";
+}
+
+function normalizeTask(task: Task): Task {
+  const raw = task.attachments as unknown;
+  const attachments: TaskAttachment[] = Array.isArray(raw) ? raw.filter(isTaskAttachmentLike) : [];
+  return { ...task, attachments };
+}
+
 function normalizeState(state: SchoolState): SchoolState {
   return {
     ...state,
     courses: state.courses.map(normalizeCourse),
+    tasks: (state.tasks ?? []).map(normalizeTask),
     workBlocks: state.workBlocks ?? [],
     classNotes: (state.classNotes ?? []).map(normalizeClassNote)
   };
@@ -183,7 +209,7 @@ function reducer(state: SchoolState, action: Action): SchoolState {
     case "add-task": {
       const now = nowIso();
       const newTask: Task = {
-        id: createId("task"),
+        id: action.payload.id ?? createId("task"),
         title: action.payload.title,
         description: action.payload.description ?? "",
         courseId: action.payload.courseId ?? "general",
@@ -197,13 +223,15 @@ function reducer(state: SchoolState, action: Action): SchoolState {
         createdAt: now,
         updatedAt: now
       };
-      return { ...state, tasks: [newTask, ...state.tasks] };
+      return { ...state, tasks: [normalizeTask(newTask), ...state.tasks] };
     }
     case "update-task":
       return {
         ...state,
         tasks: state.tasks.map((task) =>
-          task.id === action.payload.id ? { ...task, ...action.payload, updatedAt: nowIso() } : task
+          task.id === action.payload.id
+            ? normalizeTask({ ...task, ...action.payload, updatedAt: nowIso() })
+            : task
         )
       };
     case "toggle-task-done":
