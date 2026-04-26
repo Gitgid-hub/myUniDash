@@ -345,6 +345,7 @@ function ClassNoteAttachmentsBar({
   const [deckBusy, setDeckBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+  const [attachmentsExpanded, setAttachmentsExpanded] = useState(false);
   const [blobReady, setBlobReady] = useState<Record<string, boolean>>({});
   const attachments = note.attachments ?? [];
   const attachmentSig = useMemo(() => attachments.map((a) => `${a.id}:${a.size}`).join("|"), [attachments]);
@@ -354,6 +355,12 @@ function ClassNoteAttachmentsBar({
     const t = window.setTimeout(() => setUploadSuccess(null), 5000);
     return () => window.clearTimeout(t);
   }, [uploadSuccess]);
+
+  useEffect(() => {
+    if ((note.attachments ?? []).length > 0) {
+      setAttachmentsExpanded(true);
+    }
+  }, [note.attachments]);
 
   useEffect(() => {
     let cancelled = false;
@@ -523,12 +530,12 @@ function ClassNoteAttachmentsBar({
   };
 
   return (
-    <div className="shrink-0 border-t border-slate-200/80 bg-slate-50/40 px-4 py-3 dark:border-white/10 dark:bg-black/20 sm:px-8">
+    <div className="shrink-0 border-t border-slate-200/80 bg-slate-50/30 px-4 py-2 dark:border-white/10 dark:bg-black/15 sm:px-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
           <span className="flex items-center gap-1.5">
-            <Paperclip className="h-4 w-4 shrink-0 text-sky-500 dark:text-sky-400" aria-hidden />
-            <Presentation className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+            <Paperclip className="h-3.5 w-3.5 shrink-0 text-sky-500 dark:text-sky-400" aria-hidden />
+            <Presentation className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
             Presentations
           </span>
           {attachments.length > 0 ? (
@@ -536,6 +543,13 @@ function ClassNoteAttachmentsBar({
               {attachments.length}
             </Badge>
           ) : null}
+          <button
+            type="button"
+            onClick={() => setAttachmentsExpanded((v) => !v)}
+            className="rounded-full border border-slate-200/80 bg-white/70 px-2 py-0.5 text-[11px] text-slate-600 transition hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300 dark:hover:bg-white/[0.06]"
+          >
+            {attachmentsExpanded ? "Hide" : "Show"}
+          </button>
         </div>
         <div className="flex items-center gap-2">
           <input
@@ -551,7 +565,7 @@ function ClassNoteAttachmentsBar({
           <label
             htmlFor={deckInputId}
             className={clsx(
-              "inline-flex h-9 cursor-pointer select-none items-center gap-1.5 rounded-full border border-slate-200 bg-white/70 px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200 dark:hover:bg-white/[0.06]",
+              "inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full border border-slate-200 bg-white/70 px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50 active:scale-[0.98] dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200 dark:hover:bg-white/[0.06]",
               deckBusy && "pointer-events-none cursor-wait opacity-60"
             )}
           >
@@ -560,31 +574,32 @@ function ClassNoteAttachmentsBar({
           </label>
         </div>
       </div>
-      <p className="mt-1.5 text-[10px] leading-snug text-slate-400 dark:text-slate-500">
-        Decks / PDFs: upload above (IndexedDB in this browser). Screenshots: paste or use the image button in the editor (max{" "}
-        {formatFileBytes(CLASS_NOTE_IMAGE_MAX_BYTES)} per image). Names sync with your account.
-      </p>
+      {attachmentsExpanded ? (
+        <>
+          <p className="mt-1 text-[10px] leading-snug text-slate-400 dark:text-slate-500">
+            Decks / PDFs: upload above. Screenshots: paste or use the image button (max {formatFileBytes(CLASS_NOTE_IMAGE_MAX_BYTES)}).
+          </p>
+          {uploadSuccess ? (
+            <p className="mt-1.5 rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-3 py-1.5 text-xs text-emerald-900 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-100">
+              {uploadSuccess}
+            </p>
+          ) : null}
+          {err ? <p className="mt-1.5 text-xs text-rose-600 dark:text-rose-400">{err}</p> : null}
+          {summaryError ? (
+            <p className="mt-1.5 text-xs text-rose-600 dark:text-rose-400">{summaryError}</p>
+          ) : null}
 
-      {uploadSuccess ? (
-        <p className="mt-2 rounded-xl border border-emerald-200/80 bg-emerald-50/90 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-100">
-          {uploadSuccess}
-        </p>
+          <ul className="mt-2 space-y-2" aria-label="Attached files">
+            {attachments.length === 0 ? (
+              <li className="rounded-xl border border-dashed border-slate-300/80 px-3 py-2 text-center text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
+                No files yet. Use <span className="font-medium text-slate-700 dark:text-slate-200">Upload</span> or paste images in the editor.
+              </li>
+            ) : (
+              attachments.map((att) => renderRow(att, !isClassNoteImageAttachment(att)))
+            )}
+          </ul>
+        </>
       ) : null}
-      {err ? <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{err}</p> : null}
-      {summaryError ? (
-        <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{summaryError}</p>
-      ) : null}
-
-      <ul className="mt-3 space-y-2" aria-label="Attached files">
-        {attachments.length === 0 ? (
-          <li className="rounded-xl border border-dashed border-slate-300/80 px-3 py-3 text-center text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
-            No files yet. Use <span className="font-medium text-slate-700 dark:text-slate-200">Upload</span> for PDF or slides, or
-            paste / toolbar image in the editor for screenshots.
-          </li>
-        ) : (
-          attachments.map((att) => renderRow(att, !isClassNoteImageAttachment(att)))
-        )}
-      </ul>
     </div>
   );
 }
@@ -957,14 +972,14 @@ function ClassNoteFullscreenEditor({
             generatingAttachmentId={generatingAttachmentId}
             summaryError={summaryError}
           />
-          <div className="flex flex-col gap-3 border-t border-slate-200/80 p-4 dark:border-white/10 sm:px-8">
-          <p className="text-[11px] text-slate-400 dark:text-slate-500">Edits sync to your saved state as you type.</p>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/80 px-4 py-2 dark:border-white/10 sm:px-8">
+          <p className="text-[10px] text-slate-400 dark:text-slate-500">Auto-saved locally</p>
           <div className="flex flex-wrap items-center gap-2">
             {note.status === "draft" ? (
               <>
                 <Button
                   onClick={() => onPublishNote(note.id)}
-                  className="min-w-[160px] shadow-[0_0_24px_rgba(56,189,248,0.35)] dark:shadow-[0_0_28px_rgba(56,189,248,0.22)]"
+                  className="min-w-[142px] py-1.5 shadow-[0_0_24px_rgba(56,189,248,0.35)] dark:shadow-[0_0_28px_rgba(56,189,248,0.22)]"
                 >
                   Save to course
                 </Button>

@@ -31,6 +31,7 @@ import {
   X
 } from "lucide-react";
 import { ClassNotesPanel, defaultClassNoteTitle } from "@/components/class-notes-panel";
+import { OnboardingTour } from "@/components/onboarding-tour";
 import { usePruneClassNoteAttachmentBlobs } from "@/lib/class-note-attachment-blobs";
 import {
   createTaskAttachmentMeta,
@@ -57,6 +58,7 @@ import {
   workloadByCourse
 } from "@/lib/selectors";
 import { useSchoolStore } from "@/lib/store";
+import { MINIMAL_CORE_ONBOARDING_STEPS } from "@/lib/onboarding-steps";
 import type {
   Course,
   CourseMeeting,
@@ -369,6 +371,9 @@ export function SchoolOS() {
   const [catalogResults, setCatalogResults] = useState<CatalogSearchCourse[]>([]);
   const [catalogFreshness, setCatalogFreshness] = useState<{ lastCompletedAt: string | null; fetchedCount: number } | null>(null);
   const [catalogImportingId, setCatalogImportingId] = useState<string | null>(null);
+  const [onboardingActive, setOnboardingActive] = useState(false);
+  const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
+  const [onboardingTargetElement, setOnboardingTargetElement] = useState<HTMLElement | null>(null);
 
   const pushCalendarUndoEntry = useCallback((entry: CalendarUndoEntry) => {
     calendarUndoStackRef.current.push(entry);
@@ -460,10 +465,39 @@ export function SchoolOS() {
     if (courseListMode === "manual") return activeCourses.filter((course) => !course.source);
     return activeCourses;
   }, [activeCourses, courseListMode]);
+  const onboardingStep = onboardingActive ? MINIMAL_CORE_ONBOARDING_STEPS[onboardingStepIndex] ?? null : null;
   const selectedCourse =
     state.ui.selectedCourseId === "all"
       ? undefined
       : state.courses.find((course) => course.id === state.ui.selectedCourseId);
+
+  const resolveOnboardingTarget = useCallback((): HTMLElement | null => {
+    if (!onboardingStep?.targetSelector) return null;
+    const target = document.querySelector(onboardingStep.targetSelector);
+    return target instanceof HTMLElement ? target : null;
+  }, [onboardingStep]);
+
+  const beginOnboarding = useCallback(() => {
+    setOnboardingStepIndex(0);
+    setOnboardingTargetElement(null);
+    setOnboardingActive(true);
+  }, []);
+
+  const finishOnboarding = useCallback(() => {
+    setOnboardingActive(false);
+    setOnboardingTargetElement(null);
+    dispatch({ type: "set-onboarding-complete", payload: nowIso() });
+  }, [dispatch]);
+
+  const advanceOnboarding = useCallback(() => {
+    if (!onboardingActive) return;
+    const lastIdx = MINIMAL_CORE_ONBOARDING_STEPS.length - 1;
+    if (onboardingStepIndex >= lastIdx) {
+      finishOnboarding();
+      return;
+    }
+    setOnboardingStepIndex((n) => Math.min(lastIdx, n + 1));
+  }, [finishOnboarding, onboardingActive, onboardingStepIndex]);
 
   useEffect(() => {
     if (!selectedCourse) {
@@ -477,6 +511,50 @@ export function SchoolOS() {
     setEditManualProgress(selectedCourse.manualProgress);
     setEditColor(selectedCourse.color);
   }, [selectedCourse]);
+
+  useEffect(() => {
+    if (!ready || onboardingActive) return;
+    if (state.ui.onboardingCompletedAt) return;
+    if (state.courses.length > 0) return;
+    beginOnboarding();
+  }, [beginOnboarding, onboardingActive, ready, state.courses.length, state.ui.onboardingCompletedAt]);
+
+  useEffect(() => {
+    if (!onboardingActive || !onboardingStep) return;
+    if (onboardingStep.ensureView && state.ui.activeView !== onboardingStep.ensureView) {
+      dispatch({ type: "set-view", payload: onboardingStep.ensureView });
+    }
+    if (typeof onboardingStep.ensureUtilityOpen === "boolean") {
+      setIsUtilityOpen(onboardingStep.ensureUtilityOpen);
+    }
+  }, [dispatch, onboardingActive, onboardingStep, state.ui.activeView]);
+
+  useEffect(() => {
+    if (!onboardingActive) {
+      setOnboardingTargetElement(null);
+      return;
+    }
+    const refresh = () => setOnboardingTargetElement(resolveOnboardingTarget());
+    refresh();
+    const id = window.setInterval(refresh, 250);
+    return () => window.clearInterval(id);
+  }, [onboardingActive, onboardingStepIndex, resolveOnboardingTarget, state.ui.activeView, isUtilityOpen]);
+
+  useEffect(() => {
+    if (!onboardingActive || !onboardingStep || (onboardingStep.action ?? "none") !== "clickTarget") return;
+    const target = onboardingTargetElement;
+    if (!target) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const node = event.target;
+      if (!(node instanceof Node)) return;
+      if (!target.contains(node)) return;
+      window.setTimeout(() => {
+        advanceOnboarding();
+      }, 120);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [advanceOnboarding, onboardingActive, onboardingStep, onboardingTargetElement]);
 
   useEffect(() => {
     setVisibleCourseIds((current) => {
@@ -953,6 +1031,7 @@ export function SchoolOS() {
                   <button
                     key={item.id}
                     onClick={() => dispatch({ type: "set-view", payload: item.id })}
+                    data-onboarding={`nav-${item.id}`}
                     className={`flex w-full items-center gap-2.5 rounded-2xl px-3 py-2.5 text-left text-[15px] transition ${active ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900" : "text-slate-500 hover:bg-slate-100/80 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
                   >
                     <Icon className="h-[15px] w-[15px]" />
@@ -968,7 +1047,12 @@ export function SchoolOS() {
               <h3 className="text-sm font-semibold tracking-tight">Courses</h3>
               <div className="relative flex items-center gap-2">
                 <Badge>{activeCourses.length} active</Badge>
-                <Button variant="outline" onClick={() => setIsCourseActionsOpen((v) => !v)} className="h-8 px-3 text-xs">
+                <Button
+                  variant="outline"
+                  onClick={() => setIsCourseActionsOpen((v) => !v)}
+                  className="h-8 px-3 text-xs"
+                  data-onboarding="courses-add-button"
+                >
                   <Plus className="mr-1 h-3.5 w-3.5" />
                   Add
                 </Button>
@@ -1109,6 +1193,7 @@ export function SchoolOS() {
                       setComposerInitialCourseId(undefined);
                       dispatch({ type: "set-composer", payload: true });
                     }}
+                    data-onboarding="top-task-button"
                   >
                     <Plus className="mr-1 h-4 w-4" />
                     Task
@@ -1288,10 +1373,33 @@ export function SchoolOS() {
                 <li>`X` mark focused task done</li>
                 <li>`1`-`9` and `0` switch views without ⌘/Ctrl — same order as the sidebar (⌘+digit is left to the browser for tabs)</li>
               </ul>
+              <div className="mt-3 border-t border-slate-200/80 pt-3 dark:border-white/10">
+                <Button
+                  variant="outline"
+                  className="w-full justify-center"
+                  onClick={() => {
+                    setIsUtilityOpen(false);
+                    beginOnboarding();
+                  }}
+                  data-onboarding="replay-onboarding"
+                >
+                  Replay onboarding
+                </Button>
+              </div>
             </Panel>
           </aside>
         </div>
       )}
+
+      <OnboardingTour
+        active={onboardingActive}
+        step={onboardingStep}
+        stepIndex={onboardingStepIndex}
+        totalSteps={MINIMAL_CORE_ONBOARDING_STEPS.length}
+        onNext={advanceOnboarding}
+        onSkip={finishOnboarding}
+        targetElement={onboardingTargetElement}
+      />
 
       {focusedTask && (
         <TaskDetailModal
@@ -3338,7 +3446,13 @@ function CalendarView({
           <Button variant="outline" onClick={() => onOpenAddSession(selectedDate)}>Add</Button>
           <Button variant={mode === "month" ? "primary" : "outline"} onClick={() => onMode("month")}>Month</Button>
           <Button variant={mode === "week" ? "primary" : "outline"} onClick={() => onMode("week")}>Week</Button>
-          <Button variant={mode === "day" ? "primary" : "outline"} onClick={() => onMode("day")}>Day</Button>
+          <Button
+            variant={mode === "day" ? "primary" : "outline"}
+            onClick={() => onMode("day")}
+            data-onboarding="calendar-day-button"
+          >
+            Day
+          </Button>
         </div>
       </div>
       {mode === "month" ? (

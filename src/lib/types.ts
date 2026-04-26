@@ -158,6 +158,8 @@ export interface UIState {
   showTaskComposer: boolean;
   showSearch: boolean;
   focusedTaskId?: ID;
+  /** Timestamp when first-run onboarding was dismissed/completed. */
+  onboardingCompletedAt?: string;
 }
 
 export interface SchoolState {

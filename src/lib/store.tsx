@@ -59,6 +59,7 @@ type Action =
   | { type: "set-composer"; payload: boolean }
   | { type: "set-focus"; payload?: ID }
   | { type: "set-course-filter"; payload: ID | "all" }
+  | { type: "set-onboarding-complete"; payload?: string }
   | { type: "add-task"; payload: TaskInput }
   | { type: "update-task"; payload: Partial<Task> & { id: ID } }
   | { type: "toggle-task-done"; payload: ID }
@@ -143,7 +144,17 @@ function normalizeState(state: SchoolState): SchoolState {
     courses: state.courses.map(normalizeCourse),
     tasks: (state.tasks ?? []).map(normalizeTask),
     workBlocks: state.workBlocks ?? [],
-    classNotes: (state.classNotes ?? []).map(normalizeClassNote)
+    classNotes: (state.classNotes ?? []).map(normalizeClassNote),
+    ui: {
+      ...state.ui,
+      activeView: state.ui?.activeView ?? "dashboard",
+      selectedCourseId: state.ui?.selectedCourseId ?? "all",
+      theme: state.ui?.theme ?? "system",
+      showTaskComposer: state.ui?.showTaskComposer ?? false,
+      showSearch: state.ui?.showSearch ?? false,
+      focusedTaskId: state.ui?.focusedTaskId,
+      onboardingCompletedAt: state.ui?.onboardingCompletedAt
+    }
   };
 }
 
@@ -206,6 +217,8 @@ function reducer(state: SchoolState, action: Action): SchoolState {
       return { ...state, ui: { ...state.ui, focusedTaskId: action.payload } };
     case "set-course-filter":
       return { ...state, ui: { ...state.ui, selectedCourseId: action.payload } };
+    case "set-onboarding-complete":
+      return { ...state, ui: { ...state.ui, onboardingCompletedAt: action.payload ?? nowIso() } };
     case "add-task": {
       const now = nowIso();
       const newTask: Task = {

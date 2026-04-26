@@ -324,14 +324,14 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
 
     if (!editor) {
       return (
-        <div className="tiptap-editor-shell min-h-[min(42vh,360px)] rounded-2xl border border-slate-200/80 bg-slate-50/80 p-4 text-sm text-slate-500 dark:border-white/10 dark:bg-black/20 dark:text-slate-400 sm:min-h-[min(38vh,320px)]">
+        <div className="tiptap-editor-shell min-h-[min(56vh,560px)] rounded-2xl border border-slate-200/80 bg-slate-50/80 p-4 text-sm text-slate-500 dark:border-white/10 dark:bg-black/20 dark:text-slate-400 sm:min-h-[min(52vh,520px)]">
           Loading editor…
         </div>
       );
     }
 
     return (
-      <div className="tiptap-editor-shell flex min-h-[min(42vh,360px)] flex-col rounded-2xl border border-slate-200/80 bg-slate-50/80 dark:border-white/10 dark:bg-black/20 sm:min-h-[min(38vh,320px)]">
+      <div className="tiptap-editor-shell flex min-h-[min(56vh,560px)] flex-col rounded-2xl border border-slate-200/80 bg-slate-50/80 dark:border-white/10 dark:bg-black/20 sm:min-h-[min(52vh,520px)]">
         <div className="flex flex-wrap items-center gap-0.5 border-b border-slate-200/70 px-1 py-1 dark:border-white/10">
           <ToolbarBtn title="Undo" onAction={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()}>
             <Undo2 className="h-4 w-4" />
