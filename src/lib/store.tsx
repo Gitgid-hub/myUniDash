@@ -113,6 +113,7 @@ const fallback: SchoolState = {
 };
 
 const SchoolStoreContext = createContext<SchoolStoreValue | undefined>(undefined);
+const PERSIST_DEBOUNCE_MS = 1500;
 
 function createId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -396,6 +397,10 @@ export function SchoolStoreProvider({ children, store }: { children: React.React
   const storage = useMemo<Store>(() => store ?? new LocalStorageStore(), [store]);
   /** Only true after a successful `getState()` — avoids writing empty/fallback state over cloud data on load failure. */
   const persistAllowedRef = useRef(false);
+  const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestStateRef = useRef(state);
+  const latestStorageRef = useRef(storage);
+  const latestReadyRef = useRef(ready);
 
   useEffect(() => {
     let mounted = true;
@@ -427,11 +432,46 @@ export function SchoolStoreProvider({ children, store }: { children: React.React
   }, [storage]);
 
   useEffect(() => {
+    latestStateRef.current = state;
+    latestStorageRef.current = storage;
+    latestReadyRef.current = ready;
+  }, [ready, state, storage]);
+
+  useEffect(() => {
     if (!ready || !persistAllowedRef.current) {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
+        persistTimeoutRef.current = null;
+      }
       return;
     }
-    void storage.setState(state);
+    if (persistTimeoutRef.current) {
+      clearTimeout(persistTimeoutRef.current);
+      persistTimeoutRef.current = null;
+    }
+    persistTimeoutRef.current = setTimeout(() => {
+      persistTimeoutRef.current = null;
+      if (!latestReadyRef.current || !persistAllowedRef.current) return;
+      void latestStorageRef.current.setState(latestStateRef.current);
+    }, PERSIST_DEBOUNCE_MS);
+    return () => {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
+        persistTimeoutRef.current = null;
+      }
+    };
   }, [state, ready, storage]);
+
+  useEffect(() => {
+    return () => {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
+        persistTimeoutRef.current = null;
+      }
+      if (!latestReadyRef.current || !persistAllowedRef.current) return;
+      void latestStorageRef.current.setState(latestStateRef.current);
+    };
+  }, []);
 
   const addTask = useCallback((input: TaskInput) => dispatch({ type: "add-task", payload: input }), []);
   const updateTask = useCallback((task: Partial<Task> & { id: ID }) => dispatch({ type: "update-task", payload: task }), []);
