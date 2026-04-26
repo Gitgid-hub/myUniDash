@@ -72,6 +72,7 @@ import type {
 } from "@/lib/types";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { Badge, Button, Panel } from "@/components/ui";
+import { createId } from "@/lib/id";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { CalendarHolidayChip } from "@/lib/calendar-holidays";
 import { indexHolidayChipsByDate, readCachedHolidayYear, writeCachedHolidayYear } from "@/lib/calendar-holidays";
@@ -256,10 +257,6 @@ function buildBookedBlockByTaskId(workBlocks: WorkBlock[], nowTs = Date.now()): 
   return resolved;
 }
 
-function createLocalId(prefix: string): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function formatFileBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -412,7 +409,7 @@ export function SchoolOS() {
   }, [dispatch, pushCalendarUndoEntry, state.courses]);
 
   const addWorkBlockWithUndo = useCallback((block: Omit<WorkBlock, "id" | "createdAt">) => {
-    const id = createLocalId("block");
+    const id = createId("block");
     pushCalendarUndoEntry({ type: "delete-work-block", id });
     dispatch({ type: "add-work-block", payload: { ...block, id } });
   }, [dispatch, pushCalendarUndoEntry]);
@@ -766,7 +763,7 @@ export function SchoolOS() {
       if (drafts[0]) {
         noteId = drafts[0].id;
       } else {
-        noteId = createLocalId("cnote");
+        noteId = createId("cnote");
         dispatch({
           type: "add-class-note",
           payload: {
@@ -2706,7 +2703,7 @@ function CalendarView({
     const sourceKey = formatDateKey(sourceDate);
     const baseRecurrence = meeting.recurrence ?? { cadence: "weekly", interval: 1, daysOfWeek: [meeting.day] };
     const nextExceptions = Array.from(new Set([...(baseRecurrence.exceptions ?? []), sourceKey]));
-    const detachedId = createLocalId("meeting");
+    const detachedId = createId("meeting");
 
     onUpdateCourse({
       id: course.id,
@@ -2725,7 +2722,7 @@ function CalendarView({
         {
           ...meeting,
           id: detachedId,
-          seriesId: meeting.seriesId ?? createLocalId("series"),
+          seriesId: meeting.seriesId ?? createId("series"),
           day: nextDay,
           start: nextStart,
           end: nextEnd,
@@ -4335,11 +4332,11 @@ function TaskComposer({
     }
     setSaving(true);
     setFileHint(null);
-    const taskId = createLocalId("task");
+    const taskId = createId("task");
     try {
       const attachments: TaskAttachment[] = [];
       for (const file of pendingFiles) {
-        const attId = createLocalId("tatt");
+        const attId = createId("tatt");
         const meta = createTaskAttachmentMeta(file, attId);
         await saveTaskAttachmentBlob(taskId, attId, file);
         attachments.push(meta);
@@ -4658,7 +4655,7 @@ function TaskDetailModal({
     const additions: TaskAttachment[] = [];
     const filesById: Record<string, File> = {};
     for (const file of list) {
-      const attId = createLocalId("tatt");
+      const attId = createId("tatt");
       additions.push(createTaskAttachmentMeta(file, attId));
       filesById[attId] = file;
     }
@@ -5220,8 +5217,8 @@ function SessionEditorModal({
       until,
       count,
       existing: undefined,
-      id: createClientId("meeting"),
-      seriesId: createClientId("series")
+      id: createId("meeting"),
+      seriesId: createId("series")
     });
     onSave(courseId, [meeting], "append");
   }
@@ -5387,10 +5384,6 @@ type PositionedOccurrence = SessionOccurrence & {
   totalColumns: number;
 };
 
-function createClientId(prefix: string): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function formatDateKey(date: Date): string {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 }
@@ -5458,7 +5451,7 @@ function buildCourseMeeting({
   seriesId?: string;
 }): CourseMeeting {
   return {
-    id: id ?? existing?.id ?? createClientId("meeting"),
+    id: id ?? existing?.id ?? createId("meeting"),
     day,
     start: isAllDay ? "00:00" : start,
     end: isAllDay ? "23:59" : end,
@@ -5475,7 +5468,7 @@ function buildCourseMeeting({
       until: until ? new Date(`${until}T23:59:59`).toISOString() : undefined,
       count: count ? Math.max(1, Number(count)) : undefined
     },
-    seriesId: seriesId ?? existing?.seriesId ?? createClientId("series")
+    seriesId: seriesId ?? existing?.seriesId ?? createId("series")
   };
 }
 

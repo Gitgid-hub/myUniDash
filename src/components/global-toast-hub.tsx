@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import clsx from "clsx";
+import { createId } from "@/lib/id";
 import type { SchoolOsToastDetail } from "@/lib/global-app-toasts";
 import { SCHOOL_OS_TOAST_EVENT } from "@/lib/global-app-toasts";
 
-type Toast = { id: number; kind: "success" | "error"; message: string };
+type Toast = { id: string; kind: "success" | "error"; message: string };
 
 export function GlobalToastHub() {
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -16,7 +17,7 @@ export function GlobalToastHub() {
       const kind = ce.detail?.kind === "error" ? "error" : "success";
       const message = typeof ce.detail?.message === "string" ? ce.detail.message.trim() : "";
       if (!message) return;
-      const id = Date.now() + Math.random();
+      const id = createId("toast");
       setToasts((prev) => [...prev, { id, kind, message }]);
       window.setTimeout(() => {
         setToasts((prev) => prev.filter((t) => t.id !== id));

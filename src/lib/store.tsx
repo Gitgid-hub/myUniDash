@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { SupabaseStateStore } from "@/lib/cloud-store";
 import { nowIso } from "@/lib/date";
+import { createId } from "@/lib/id";
 import { createSeedState } from "@/lib/seed";
 import { LocalStorageStore } from "@/lib/storage";
 import type {
@@ -114,10 +115,6 @@ const fallback: SchoolState = {
 
 const SchoolStoreContext = createContext<SchoolStoreValue | undefined>(undefined);
 const PERSIST_DEBOUNCE_MS = 1500;
-
-function createId(prefix: string): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
 
 function normalizeClassNote(note: ClassNote): ClassNote {
   return {

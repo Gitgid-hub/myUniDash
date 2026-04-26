@@ -29,6 +29,7 @@ import {
 } from "@/lib/class-note-attachment-blobs";
 import { formatDateKeyLocal } from "@/lib/date";
 import { pushSchoolOsToast } from "@/lib/global-app-toasts";
+import { createId } from "@/lib/id";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { ClassNote, ClassNoteAttachment, ClassNoteEditorTextDir, Course } from "@/lib/types";
 import { Badge, Button, Panel } from "@/components/ui";
@@ -406,7 +407,7 @@ function ClassNoteAttachmentsBar({
       const meta: ClassNoteAttachment[] = [];
       const n = noteRef.current;
       for (const file of list) {
-        const attId = `att_${Math.random().toString(36).slice(2, 12)}`;
+        const attId = createId("att");
         await saveClassNoteAttachmentBlob(n.id, attId, file);
         const verify = await getClassNoteAttachmentBlob(n.id, attId);
         if (!verify || verify.size < 1) {
@@ -764,7 +765,7 @@ function ClassNoteFullscreenEditor({
     async (file: File) => {
       if (!isClassNoteImageFile(file) || file.size > CLASS_NOTE_IMAGE_MAX_BYTES) return null;
       const n = noteRef.current;
-      const attId = `att_${Math.random().toString(36).slice(2, 12)}`;
+      const attId = createId("att");
       try {
         await saveClassNoteAttachmentBlob(n.id, attId, file);
         const verify = await getClassNoteAttachmentBlob(n.id, attId);
@@ -1127,7 +1128,7 @@ function ClassNotesPanelInner({
   const handleAddManual = useCallback(
     (courseId: string) => {
       const occurredOn = formatDateKeyLocal(new Date());
-      const id = `cnote_${Math.random().toString(36).slice(2, 12)}`;
+      const id = createId("cnote");
       onCreateNote({
         id,
         courseId,
