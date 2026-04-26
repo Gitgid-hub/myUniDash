@@ -711,6 +711,7 @@ function ClassNoteFullscreenEditor({
           }
           throw new Error(typeof data.error === "string" ? data.error : res.statusText);
         }
+        const cardCount = Number(res.headers.get("X-Card-Count") ?? 0);
         const blob = await res.blob();
         const base = noteTitle
           .trim()
@@ -724,7 +725,8 @@ function ClassNoteFullscreenEditor({
           .replace(/[^a-z0-9]+/gi, "-")
           .replace(/^-|-$/g, "")
           .slice(0, 16);
-        const fname = `anki-${codePart || "course"}-${base || "class-note"}-${occurredOn}.csv`;
+        const countPart = cardCount > 0 ? `${cardCount}cards` : "cards";
+        const fname = `anki-${codePart || "course"}-${base || "class-note"}-${countPart}.csv`;
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -736,6 +738,12 @@ function ClassNoteFullscreenEditor({
           kind: "success",
           message: "Anki CSV is ready — your download should start. You can keep working; this notice fades on its own."
         });
+        if (cardCount > 0 && cardCount < 35) {
+          pushSchoolOsToast({
+            kind: "success",
+            message: `Exported ${cardCount} cards — this note was shorter than the 35-card target.`
+          });
+        }
       } catch (e) {
         const net =
           e instanceof TypeError &&

@@ -76,22 +76,6 @@ function parseModelCards(raw: string): CardRow[] {
   return rows;
 }
 
-function normalizeRowsToTarget(rows: CardRow[], target: number): CardRow[] {
-  if (rows.length >= target) return rows.slice(0, target);
-  const out = [...rows];
-  let i = 0;
-  while (out.length < target) {
-    const src = rows[i % rows.length];
-    out.push({
-      front: src.front,
-      back: src.back,
-      tags: `${src.tags} autofill::duplicate`.trim()
-    });
-    i += 1;
-  }
-  return out;
-}
-
 /** RFC 4180 CSV field; always quote when HTML may contain commas or quotes. */
 function csvFieldQuoted(s: string): string {
   const t = s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -247,13 +231,17 @@ Return the JSON array now.`;
       return NextResponse.json({ error: msg }, { status: 502 });
     }
 
-    const normalizedRows = normalizeRowsToTarget(rows, TARGET_CARDS);
-    const csv = rowsToCsv(normalizedRows, courseCodeRaw);
+    const finalRows = rows.slice(0, TARGET_CARDS);
+    const csv = rowsToCsv(finalRows, courseCodeRaw);
+    const fileBase = slugTagPart(courseName || noteTitle || "class_note", 48);
+    const filename = `anki-${fileBase}-${finalRows.length}cards.csv`;
     return new NextResponse(csv, {
       status: 200,
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
-        "Cache-Control": "no-store"
+        "Cache-Control": "no-store",
+        "X-Card-Count": String(finalRows.length),
+        "Content-Disposition": `attachment; filename="${filename}"`
       }
     });
   } catch (e) {
