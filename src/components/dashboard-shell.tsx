@@ -11,6 +11,8 @@ import { SchoolStoreProvider } from "@/lib/store";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { Store } from "@/lib/types";
 
+const AUTH_SPLASH_MIN_MS = 1100;
+
 export function DashboardShell() {
   const { enabled, loading, user } = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -19,11 +21,21 @@ export function DashboardShell() {
    * would cancel this timer and never reschedule — you can stay on "Connecting…" forever).
    */
   const [authWallExpired, setAuthWallExpired] = useState(false);
+  const [authSplashMinElapsed, setAuthSplashMinElapsed] = useState(false);
 
   useEffect(() => {
     const id = window.setTimeout(() => setAuthWallExpired(true), 4_000);
     return () => window.clearTimeout(id);
   }, []);
+
+  useEffect(() => {
+    if (!enabled) {
+      setAuthSplashMinElapsed(true);
+      return;
+    }
+    const id = window.setTimeout(() => setAuthSplashMinElapsed(true), AUTH_SPLASH_MIN_MS);
+    return () => window.clearTimeout(id);
+  }, [enabled]);
 
   const store = useMemo<Store>(() => {
     if (enabled && user) {
@@ -32,7 +44,7 @@ export function DashboardShell() {
     return new LocalStorageStore();
   }, [enabled, user]);
 
-  const blockOnAuth = loading && !authWallExpired;
+  const blockOnAuth = (loading || !authSplashMinElapsed) && !authWallExpired;
 
   if (blockOnAuth) {
     return (
@@ -48,14 +60,17 @@ export function DashboardShell() {
         }}
       >
         <div>
-          <p className="animate-pulse text-lg">Connecting…</p>
-          <p className="mt-3 max-w-md text-sm text-slate-400" style={{ color: "#94a3b8", marginTop: "12px", fontSize: "14px" }}>
-            After ~4s this screen clears automatically. If sign-in still fails: use the legacy{" "}
-            <strong className="text-slate-200">anon</strong> JWT for{" "}
-            <code className="rounded bg-white/10 px-1">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> (starts with{" "}
-            <code className="rounded bg-white/10 px-1">eyJ</code>), or set{" "}
-            <code className="rounded bg-white/10 px-1">NEXT_PUBLIC_SCHOOL_OS_OFFLINE=true</code> to run local-only, then restart{" "}
-            <code className="rounded bg-white/10 px-1">npm run dev</code>.
+          <p className="text-lg font-medium tracking-wide text-slate-100">Connecting</p>
+          <div className="mt-2 flex items-center justify-center gap-1.5">
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-300 [animation-delay:0ms]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-300 [animation-delay:120ms]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-300 [animation-delay:240ms]" />
+          </div>
+          <p
+            className="mt-3 max-w-md text-sm text-slate-400 transition-opacity duration-500"
+            style={{ color: "#94a3b8", marginTop: "12px", fontSize: "14px" }}
+          >
+            Brewing your dashboard... stronger than campus coffee.
           </p>
         </div>
       </div>

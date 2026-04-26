@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import type { Session, User } from "@supabase/supabase-js";
+import type { Session, Subscription, User } from "@supabase/supabase-js";
 import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 
 interface AuthContextValue {
@@ -78,13 +78,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           stopBlockingUi();
         });
 
-      let subscription: { subscription: { unsubscribe: () => void } };
+      let authSubscription: Subscription | null = null;
       try {
-        subscription = supabase.auth.onAuthStateChange((_event, nextSession) => {
+        const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
           if (!mounted) return;
           setSession(nextSession);
           stopBlockingUi();
         });
+        authSubscription = data.subscription;
       } catch (subErr) {
         console.error("Supabase onAuthStateChange failed:", subErr);
         stopBlockingUi();
@@ -99,7 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         mounted = false;
         clearSafety();
         clearHard();
-        subscription.subscription.unsubscribe();
+        authSubscription?.unsubscribe();
       };
     } catch (err) {
       console.error("Supabase auth setup failed:", err);
