@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/gids/Documents/myUniDash diff)",
+      "Bash(git -C /Users/gids/Documents/myUniDash status)"
+    ]
+  }
+}

@@ -29,6 +29,7 @@ import {
 } from "@/lib/class-note-attachment-blobs";
 import { formatDateKeyLocal } from "@/lib/date";
 import { pushSchoolOsToast } from "@/lib/global-app-toasts";
+import { getSupabaseClient } from "@/lib/supabase";
 import type { ClassNote, ClassNoteAttachment, ClassNoteEditorTextDir, Course } from "@/lib/types";
 import { Badge, Button, Panel } from "@/components/ui";
 
@@ -645,6 +646,20 @@ function ClassNoteFullscreenEditor({
   const ankiSourceText = classNoteBodyToPlainText(note.bodyMarkdown).trim();
   const hasAnkiSourceText = ankiSourceText.length > 0;
 
+  const getAiAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      throw new Error(
+        "AI features require a signed-in account and Supabase auth is currently unavailable."
+      );
+    }
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data.session?.access_token) {
+      throw new Error("Please sign in to use AI features.");
+    }
+    return { Authorization: `Bearer ${data.session.access_token}` };
+  }, []);
+
   const handleAnkiCsvDownload = useCallback(() => {
     if (ankiExportLockRef.current) {
       pushSchoolOsToast({
@@ -676,9 +691,10 @@ function ClassNoteFullscreenEditor({
 
     void (async () => {
       try {
+        const authHeaders = await getAiAuthHeaders();
         const res = await fetch(`${window.location.origin}/api/class-notes/anki-csv`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({
             bodyMarkdown,
             noteTitle,
@@ -689,6 +705,9 @@ function ClassNoteFullscreenEditor({
         });
         if (!res.ok) {
           const data = (await res.json().catch(() => ({}))) as { error?: string };
+          if (res.status === 401) {
+            throw new Error("Please sign in to use AI features.");
+          }
           throw new Error(typeof data.error === "string" ? data.error : res.statusText);
         }
         const blob = await res.blob();
@@ -739,7 +758,7 @@ function ClassNoteFullscreenEditor({
         }
       }
     })();
-  }, [ankiSourceText, course?.code, course?.name, note.bodyMarkdown, note.occurredOn, note.title]);
+  }, [ankiSourceText, course?.code, course?.name, getAiAuthHeaders, note.bodyMarkdown, note.occurredOn, note.title]);
 
   const handleRegisterEmbeddedImage = useCallback(
     async (file: File) => {
@@ -778,9 +797,10 @@ function ClassNoteFullscreenEditor({
             "לא נמצא טקסט בקובץ (אולי סריקת תמונה בלבד). נסו PDF עם טקסט נבחר או PPTX."
           );
         }
+        const authHeaders = await getAiAuthHeaders();
         const res = await fetch("/api/class-notes/summarize", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({
             sourceText: text,
             noteTitle: note.title,
@@ -789,6 +809,9 @@ function ClassNoteFullscreenEditor({
         });
         const data = (await res.json().catch(() => ({}))) as { error?: string; html?: string };
         if (!res.ok) {
+          if (res.status === 401) {
+            throw new Error("Please sign in to use AI features.");
+          }
           throw new Error(typeof data.error === "string" ? data.error : res.statusText);
         }
         const html = data.html;
@@ -803,7 +826,7 @@ function ClassNoteFullscreenEditor({
         setGeneratingAttachmentId(null);
       }
     },
-    [course?.name, note.id, note.title, setEditorTab]
+    [course?.name, getAiAuthHeaders, note.id, note.title, setEditorTab]
   );
 
   return (
