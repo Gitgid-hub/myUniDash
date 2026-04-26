@@ -2,23 +2,39 @@ import { NextRequest, NextResponse } from "next/server";
 import { runHujiCatalogIngestion } from "@/lib/catalog/ingest";
 import { getServiceSupabaseClient } from "@/lib/supabase-server";
 
-async function ensureAuthenticated(request: NextRequest): Promise<boolean> {
+async function getUserEmailFromRequest(request: NextRequest): Promise<string | null> {
   const authHeader = request.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
-    return false;
+    return null;
   }
   const token = authHeader.slice("Bearer ".length).trim();
-  if (!token) return false;
+  if (!token) return null;
   const supabase = getServiceSupabaseClient();
   const { data, error } = await supabase.auth.getUser(token);
-  return Boolean(!error && data.user);
+  if (error || !data.user?.email) return null;
+  return data.user.email.trim().toLowerCase();
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const allowed = await ensureAuthenticated(request);
-    if (!allowed) {
+    const userEmail = await getUserEmailFromRequest(request);
+    if (!userEmail) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const adminEmailsRaw = process.env.ADMIN_EMAILS?.trim();
+    if (adminEmailsRaw) {
+      const allowlist = new Set(
+        adminEmailsRaw
+          .split(",")
+          .map((email) => email.trim().toLowerCase())
+          .filter(Boolean)
+      );
+      if (!allowlist.has(userEmail)) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+    } else if (process.env.NODE_ENV === "production") {
+      return NextResponse.json({ error: "This endpoint is restricted." }, { status: 403 });
     }
 
     const result = await runHujiCatalogIngestion();
