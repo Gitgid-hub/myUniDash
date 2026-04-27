@@ -46,13 +46,12 @@ import {
   TASK_ATTACHMENT_ACCEPT,
   TASK_ATTACHMENT_MAX_BYTES
 } from "@/lib/task-attachment-blobs";
-import { formatDue, formatWeekOfLabel, getWeekKey, isOverdue, isToday, nowIso, startOfDay } from "@/lib/date";
+import { formatWeekOfLabel, getWeekKey, isOverdue, isToday, nowIso, startOfDay } from "@/lib/date";
 import {
   completedByWeek,
   getOverdueTasks,
   getTodayTasks,
   getUpcomingTasks,
-  getWorkloadThisWeek,
   searchAll,
   workloadByCourse
 } from "@/lib/selectors";
