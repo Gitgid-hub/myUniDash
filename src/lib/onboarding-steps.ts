@@ -29,6 +29,18 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     ensureUtilityOpen: false
   },
   {
+    id: "degree",
+    title: "Choose your degree",
+    body: "Pick your degree in Settings before importing courses. Then use Open HUJI import to add relevant courses.",
+    targetSelector: "[data-onboarding='settings-degree-panel']",
+    action: "none",
+    placement: "left",
+    ensureView: "dashboard",
+    ensureUtilityOpen: false,
+    ensureSettingsOpen: true,
+    ensureCatalogPickerOpen: false
+  },
+  {
     id: "calendar",
     title: "Open the calendar",
     body: "Go to Calendar to see sessions and plan your week.",
@@ -75,11 +87,34 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     ensureUtilityOpen: false
   },
   {
+    id: "settings-feature",
+    title: "Open settings",
+    body: "Next, open Settings to send product feedback and feature requests.",
+    targetSelector: "[data-onboarding='settings-button']",
+    action: "none",
+    placement: "bottom",
+    ensureView: "dashboard",
+    ensureUtilityOpen: false,
+    ensureSettingsOpen: false
+  },
+  {
+    id: "feature-request",
+    title: "Send feature requests",
+    body: "Open Settings and use this box to send missing features with screenshots.",
+    targetSelector: "[data-onboarding='feature-request-panel']",
+    action: "none",
+    placement: "left",
+    ensureView: "dashboard",
+    ensureUtilityOpen: false,
+    ensureSettingsOpen: true
+  },
+  {
     id: "done",
     title: "You're ready",
     body: "That is the core workflow. You can replay this tour anytime from Guide.",
     action: "none",
     placement: "auto",
-    ensureView: "dashboard"
+    ensureView: "dashboard",
+    ensureSettingsOpen: false
   }
 ];

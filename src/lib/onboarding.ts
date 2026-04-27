@@ -13,4 +13,6 @@ export type OnboardingStep = {
   /** Optional UI setup before this step. */
   ensureView?: MainView;
   ensureUtilityOpen?: boolean;
+  ensureSettingsOpen?: boolean;
+  ensureCatalogPickerOpen?: boolean;
 };

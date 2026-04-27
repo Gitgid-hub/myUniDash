@@ -21,11 +21,8 @@ const VIEW_KEYS: Record<string, MainView> = {
   "3": "class-notes",
   "4": "kanban",
   "5": "upcoming",
-  "6": "today",
-  "7": "overdue",
-  "8": "list",
-  "9": "by-course",
-  "0": "by-priority"
+  "6": "by-course",
+  "7": "by-priority"
 };
 
 export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {

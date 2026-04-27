@@ -36,6 +36,7 @@ interface TaskInput {
 }
 
 interface CourseInput {
+  id?: ID;
   name: string;
   code: string;
   source?: string;
@@ -69,6 +70,7 @@ type Action =
   | { type: "add-course"; payload: CourseInput }
   | { type: "update-course"; payload: Partial<Course> & { id: ID } }
   | { type: "archive-course"; payload: ID }
+  | { type: "delete-course"; payload: ID }
   | { type: "add-work-block"; payload: Omit<WorkBlock, "id" | "createdAt"> & { id?: ID } }
   | { type: "update-work-block"; payload: Partial<WorkBlock> & { id: ID } }
   | { type: "delete-work-block"; payload: ID }
@@ -267,7 +269,7 @@ function reducer(state: SchoolState, action: Action): SchoolState {
     case "add-course": {
       const now = nowIso();
       const newCourse: Course = {
-        id: createId("course"),
+        id: action.payload.id ?? createId("course"),
         name: action.payload.name,
         code: action.payload.code,
         source: action.payload.source,
@@ -305,6 +307,28 @@ function reducer(state: SchoolState, action: Action): SchoolState {
           course.id === action.payload ? { ...course, archived: true, updatedAt: nowIso() } : course
         )
       };
+    case "delete-course": {
+      const deletingCourseId = action.payload;
+      const remainingTasks = state.tasks.filter((task) => task.courseId !== deletingCourseId);
+      const remainingTaskIds = new Set(remainingTasks.map((task) => task.id));
+      return {
+        ...state,
+        courses: state.courses.filter((course) => course.id !== deletingCourseId),
+        tasks: remainingTasks,
+        workBlocks: (state.workBlocks ?? []).filter(
+          (block) => block.courseId !== deletingCourseId && remainingTaskIds.has(block.taskId)
+        ),
+        classNotes: (state.classNotes ?? []).filter((note) => note.courseId !== deletingCourseId),
+        ui: {
+          ...state.ui,
+          selectedCourseId: state.ui.selectedCourseId === deletingCourseId ? "all" : state.ui.selectedCourseId,
+          focusedTaskId:
+            state.ui.focusedTaskId && remainingTaskIds.has(state.ui.focusedTaskId)
+              ? state.ui.focusedTaskId
+              : undefined
+        }
+      };
+    }
     case "add-work-block": {
       const now = nowIso();
       const block: WorkBlock = {

@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import {
   BarChart3,
@@ -17,7 +17,6 @@ import {
   Copy,
   KanbanSquare,
   LayoutDashboard,
-  ListTodo,
   Moon,
   Paperclip,
   Plus,
@@ -83,15 +82,20 @@ const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ class
   { id: "class-notes", label: "Class Notes", icon: StickyNote },
   { id: "kanban", label: "Kanban", icon: KanbanSquare },
   { id: "upcoming", label: "Upcoming", icon: CalendarDays },
-  { id: "today", label: "Today", icon: Timer },
-  { id: "overdue", label: "Overdue", icon: TriangleAlert },
-  { id: "list", label: "List", icon: ListTodo },
   { id: "by-course", label: "By Course", icon: BookOpen },
   { id: "by-priority", label: "By Priority", icon: BarChart3 }
 ];
 
 /** Survives remounts so “Class finished” only nags once per session instance. */
 const POST_SESSION_PROMPT_STORAGE_KEY = "school-os-post-session-prompt-dismissed:v1";
+const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gmail.com"]);
+const MAX_FEATURE_REQUEST_SCREENSHOTS = 3;
+const CATALOG_DEGREES = [
+  { id: "biology", label: "Biology (HUJI 570)" },
+  { id: "linguistics", label: "Linguistics (HUJI 181)" }
+] as const;
+type CatalogDegreeId = (typeof CATALOG_DEGREES)[number]["id"];
+const CATALOG_DEGREE_STORAGE_KEY = "school-os:catalog-degree:v1";
 
 function loadPostSessionPromptDismissedKeys(): Set<string> {
   if (typeof window === "undefined") return new Set();
@@ -263,6 +267,15 @@ function formatFileBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(new Error("Could not read image."));
+    reader.readAsDataURL(file);
+  });
+}
+
 type CalendarUndoEntry =
   | { type: "replace-course"; course: Course }
   | { type: "delete-work-block"; id: string }
@@ -273,6 +286,15 @@ type TaskUndoEntry = {
   id: string;
   status: TaskStatus;
   completedAt?: string;
+};
+
+type FeatureRequestItem = {
+  id: number;
+  user_email: string;
+  message: string;
+  screenshots: Array<{ name: string; mimeType: string; dataUrl: string }>;
+  status: string;
+  created_at: string;
 };
 
 interface CatalogSearchMeeting {
@@ -288,13 +310,28 @@ interface CatalogSearchCourse {
   source: string;
   externalId: string;
   courseNumber: string;
+  title?: string;
   nameHe?: string | null;
   nameEn?: string | null;
   faculty?: string | null;
   department?: string | null;
   credits?: number | null;
   lastSeenAt?: string | null;
+  roadmapYearLabel?: string;
+  roadmapSectionLabel?: string;
   meetings: CatalogSearchMeeting[];
+}
+
+interface ImportedMeetingChoiceOption {
+  optionId: string;
+  label: string;
+  meetings: CatalogSearchMeeting[];
+}
+
+interface ImportedMeetingChoiceSet {
+  setId: string;
+  label: string;
+  options: ImportedMeetingChoiceOption[];
 }
 
 const MemoDashboardView = memo(DashboardView);
@@ -339,10 +376,18 @@ export function SchoolOS() {
   const [isUtilityOpen, setIsUtilityOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [featureRequestMessage, setFeatureRequestMessage] = useState("");
+  const [featureRequestShots, setFeatureRequestShots] = useState<Array<{ name: string; mimeType: string; dataUrl: string }>>([]);
+  const [featureRequestSending, setFeatureRequestSending] = useState(false);
+  const [featureRequestError, setFeatureRequestError] = useState<string | null>(null);
+  const [featureRequestSuccess, setFeatureRequestSuccess] = useState<string | null>(null);
+  const [adminFeatureRequests, setAdminFeatureRequests] = useState<FeatureRequestItem[]>([]);
+  const [adminRequestsLoading, setAdminRequestsLoading] = useState(false);
+  const [adminRequestsError, setAdminRequestsError] = useState<string | null>(null);
   const [isAddCourseOpen, setIsAddCourseOpen] = useState(false);
   const [isCatalogPickerOpen, setIsCatalogPickerOpen] = useState(false);
   const [isCourseActionsOpen, setIsCourseActionsOpen] = useState(false);
-  const [courseListMode, setCourseListMode] = useState<"all" | "imported" | "manual">("all");
+  const [courseListMode, setCourseListMode] = useState<"all" | "imported" | "manual" | "archived">("all");
   const [isCourseEditorOpen, setIsCourseEditorOpen] = useState(false);
   const [isSessionEditorOpen, setIsSessionEditorOpen] = useState(false);
   const [endedWorkBlockId, setEndedWorkBlockId] = useState<string | null>(null);
@@ -378,9 +423,35 @@ export function SchoolOS() {
   const [catalogResults, setCatalogResults] = useState<CatalogSearchCourse[]>([]);
   const [catalogFreshness, setCatalogFreshness] = useState<{ lastCompletedAt: string | null; fetchedCount: number } | null>(null);
   const [catalogImportingId, setCatalogImportingId] = useState<string | null>(null);
+  const [catalogDegreeImporting, setCatalogDegreeImporting] = useState(false);
+  const [catalogViewMode, setCatalogViewMode] = useState<"search" | "roadmap">("search");
+  const degreeLoadRequestSeqRef = useRef(0);
+  const [catalogDegree, setCatalogDegree] = useState<CatalogDegreeId>(() => {
+    if (typeof window === "undefined") return "biology";
+    const saved = window.localStorage.getItem(CATALOG_DEGREE_STORAGE_KEY);
+    if (saved && CATALOG_DEGREES.some((degree) => degree.id === saved)) {
+      return saved as CatalogDegreeId;
+    }
+    return "biology";
+  });
   const [onboardingActive, setOnboardingActive] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
   const [onboardingTargetElement, setOnboardingTargetElement] = useState<HTMLElement | null>(null);
+  const [pendingSessionChoiceFlow, setPendingSessionChoiceFlow] = useState<{
+    courseId: string;
+    courseName: string;
+    courseColor: string;
+    sets: Array<{
+      setId: string;
+      label: string;
+      options: Array<{
+        optionId: string;
+        label: string;
+        meetings: CourseMeeting[];
+      }>;
+    }>;
+    activeSetIndex: number;
+  } | null>(null);
 
   const pushCalendarUndoEntry = useCallback((entry: CalendarUndoEntry) => {
     calendarUndoStackRef.current.push(entry);
@@ -493,13 +564,15 @@ export function SchoolOS() {
     root.classList.toggle("dark", dark);
   }, [state.ui.theme]);
   const activeCourses = useMemo(() => state.courses.filter((course) => !course.archived), [state.courses]);
+  const archivedCourses = useMemo(() => state.courses.filter((course) => course.archived), [state.courses]);
   const importedCoursesCount = useMemo(() => activeCourses.filter((course) => !!course.source).length, [activeCourses]);
   const manualCoursesCount = useMemo(() => activeCourses.filter((course) => !course.source).length, [activeCourses]);
   const visibleCoursesInSidebar = useMemo(() => {
+    if (courseListMode === "archived") return archivedCourses;
     if (courseListMode === "imported") return activeCourses.filter((course) => !!course.source);
     if (courseListMode === "manual") return activeCourses.filter((course) => !course.source);
     return activeCourses;
-  }, [activeCourses, courseListMode]);
+  }, [activeCourses, archivedCourses, courseListMode]);
   const onboardingStep = onboardingActive ? MINIMAL_CORE_ONBOARDING_STEPS[onboardingStepIndex] ?? null : null;
   const selectedCourse =
     state.ui.selectedCourseId === "all"
@@ -550,6 +623,15 @@ export function SchoolOS() {
     setOnboardingStepIndex((n) => Math.max(0, n - 1));
   }, [onboardingActive]);
 
+  const getAuthHeader = useCallback(async (): Promise<Record<string, string>> => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return {};
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) return {};
+    return { Authorization: `Bearer ${token}` };
+  }, []);
+
   const handleSignOut = useCallback(async () => {
     const supabase = getSupabaseClient();
     if (!supabase) return;
@@ -561,6 +643,108 @@ export function SchoolOS() {
       setIsSettingsOpen(false);
     }
   }, []);
+
+  const isAdmin = useMemo(() => {
+    const email = user?.email?.toLowerCase();
+    if (!email) return false;
+    return ADMIN_EMAILS.has(email);
+  }, [user?.email]);
+
+  const loadAdminFeatureRequests = useCallback(async () => {
+    if (!isAdmin) return;
+    setAdminRequestsLoading(true);
+    setAdminRequestsError(null);
+    try {
+      const headers = await getAuthHeader();
+      const res = await fetch("/api/feature-requests", { headers, cache: "no-store" });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to load feature requests.");
+      }
+      setAdminFeatureRequests(payload.requests ?? []);
+    } catch (error) {
+      setAdminRequestsError(error instanceof Error ? error.message : "Failed to load feature requests.");
+    } finally {
+      setAdminRequestsLoading(false);
+    }
+  }, [getAuthHeader, isAdmin]);
+
+  const submitFeatureRequest = useCallback(async () => {
+    const message = featureRequestMessage.trim();
+    if (!message) {
+      setFeatureRequestError("Please describe what is missing.");
+      return;
+    }
+    setFeatureRequestSending(true);
+    setFeatureRequestError(null);
+    setFeatureRequestSuccess(null);
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        ...(await getAuthHeader())
+      };
+      const res = await fetch("/api/feature-requests", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          message,
+          screenshots: featureRequestShots
+        })
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to send request.");
+      }
+      setFeatureRequestMessage("");
+      setFeatureRequestShots([]);
+      setFeatureRequestSuccess("Request sent. Thanks for the feedback.");
+      if (isAdmin) {
+        await loadAdminFeatureRequests();
+      }
+    } catch (error) {
+      setFeatureRequestError(error instanceof Error ? error.message : "Failed to send request.");
+    } finally {
+      setFeatureRequestSending(false);
+    }
+  }, [featureRequestMessage, featureRequestShots, getAuthHeader, isAdmin, loadAdminFeatureRequests]);
+
+  const onFeatureRequestPaste = useCallback(async (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const imageFiles = Array.from(event.clipboardData?.items ?? [])
+      .filter((item) => item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (imageFiles.length === 0) return;
+    event.preventDefault();
+    try {
+      const remaining = Math.max(0, MAX_FEATURE_REQUEST_SCREENSHOTS - featureRequestShots.length);
+      if (remaining <= 0) {
+        setFeatureRequestError(`You can attach up to ${MAX_FEATURE_REQUEST_SCREENSHOTS} screenshots.`);
+        return;
+      }
+      const toAttach = imageFiles.slice(0, remaining);
+      const encoded = await Promise.all(
+        toAttach.map(async (file, idx) => ({
+          name: file.name || `pasted-screenshot-${Date.now()}-${idx + 1}.png`,
+          mimeType: file.type || "image/png",
+          dataUrl: await fileToDataUrl(file)
+        }))
+      );
+      setFeatureRequestShots((prev) => [...prev, ...encoded].slice(0, MAX_FEATURE_REQUEST_SCREENSHOTS));
+      setFeatureRequestError(null);
+    } catch {
+      setFeatureRequestError("Could not paste screenshot.");
+    }
+  }, [featureRequestShots.length]);
+
+  useEffect(() => {
+    if (!isSettingsOpen || !isAdmin) return;
+    void loadAdminFeatureRequests();
+  }, [isAdmin, isSettingsOpen, loadAdminFeatureRequests]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(CATALOG_DEGREE_STORAGE_KEY, catalogDegree);
+  }, [catalogDegree]);
 
   useEffect(() => {
     if (!onboardingActive) return;
@@ -631,6 +815,8 @@ export function SchoolOS() {
     if (typeof onboardingStep.ensureUtilityOpen === "boolean") {
       setIsUtilityOpen(onboardingStep.ensureUtilityOpen);
     }
+    setIsSettingsOpen(onboardingStep.ensureSettingsOpen === true);
+    setIsCatalogPickerOpen(onboardingStep.ensureCatalogPickerOpen === true);
   }, [dispatch, onboardingActive, onboardingStep, state.ui.activeView]);
 
   useEffect(() => {
@@ -647,7 +833,7 @@ export function SchoolOS() {
     refresh();
     const id = window.setInterval(refresh, 250);
     return () => window.clearInterval(id);
-  }, [onboardingActive, onboardingStepIndex, resolveOnboardingTarget, state.ui.activeView, isUtilityOpen]);
+  }, [onboardingActive, onboardingStepIndex, resolveOnboardingTarget, state.ui.activeView, isUtilityOpen, isSettingsOpen, isCatalogPickerOpen]);
 
   useEffect(() => {
     setVisibleCourseIds((current) => {
@@ -678,6 +864,12 @@ export function SchoolOS() {
         return [...base].sort(taskComparator);
     }
   }, [state.tasks, state.ui.activeView, state.ui.selectedCourseId]);
+
+  // Old saved states may still point to removed sidebar tabs.
+  useEffect(() => {
+    if (!["today", "overdue", "list"].includes(state.ui.activeView)) return;
+    dispatch({ type: "set-view", payload: "dashboard" });
+  }, [state.ui.activeView, dispatch]);
 
   const searchResults = useMemo(
     () => searchAll(searchQuery, state.tasks, state.courses),
@@ -1018,15 +1210,6 @@ export function SchoolOS() {
     setIsCourseActionsOpen(false);
   };
 
-  const getAuthHeader = useCallback(async (): Promise<Record<string, string>> => {
-    const supabase = getSupabaseClient();
-    if (!supabase) return {};
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    if (!token) return {};
-    return { Authorization: `Bearer ${token}` };
-  }, []);
-
   const runCatalogSearch = useCallback(async (query: string) => {
     setCatalogLoading(true);
     setCatalogError(null);
@@ -1037,6 +1220,7 @@ export function SchoolOS() {
       if (!res.ok) {
         throw new Error(payload.error ?? "Failed to search catalog");
       }
+      setCatalogViewMode("search");
       setCatalogResults(payload.courses ?? []);
       setCatalogFreshness(payload.freshness ?? null);
     } catch (error) {
@@ -1049,8 +1233,10 @@ export function SchoolOS() {
 
   useEffect(() => {
     if (!isCatalogPickerOpen) return;
+    const trimmed = catalogQuery.trim();
+    if (!trimmed) return;
     const handle = window.setTimeout(() => {
-      runCatalogSearch(catalogQuery.trim());
+      runCatalogSearch(trimmed);
     }, 250);
     return () => window.clearTimeout(handle);
   }, [catalogQuery, isCatalogPickerOpen, runCatalogSearch]);
@@ -1068,15 +1254,25 @@ export function SchoolOS() {
       if (!res.ok) {
         throw new Error(payload.error ?? "Catalog refresh failed");
       }
-      await runCatalogSearch(catalogQuery.trim());
+      const trimmed = catalogQuery.trim();
+      if (!(catalogViewMode === "roadmap" && !trimmed)) {
+        await runCatalogSearch(trimmed);
+      }
     } catch (error) {
       setCatalogError(error instanceof Error ? error.message : "Catalog refresh failed");
     } finally {
       setCatalogRefreshing(false);
     }
-  }, [catalogQuery, getAuthHeader, runCatalogSearch]);
+  }, [catalogQuery, catalogViewMode, getAuthHeader, runCatalogSearch]);
 
   const importCatalogCourse = useCallback(async (course: CatalogSearchCourse) => {
+    const alreadyLocal = state.courses.some(
+      (item) => item.source === course.source && item.externalCourseId === course.externalId
+    );
+    if (alreadyLocal) {
+      setCatalogError("Course already exists in your courses.");
+      return;
+    }
     setCatalogImportingId(course.externalId);
     setCatalogError(null);
     try {
@@ -1090,14 +1286,19 @@ export function SchoolOS() {
         body: JSON.stringify({ source: course.source, externalId: course.externalId })
       });
       const payload = await res.json();
-      if (res.status === 409) {
-        throw new Error("Already imported this course");
-      }
       if (!res.ok) {
         throw new Error(payload.error ?? "Import failed");
       }
       const imported = payload.course as CatalogSearchCourse & { updatedAt?: string };
       const meetings = (payload.meetings ?? []) as CatalogSearchMeeting[];
+      const meetingChoices = (payload.meetingChoices ?? []) as ImportedMeetingChoiceSet[];
+      const inferMeetingKind = (meetingType?: string | null): CourseMeeting["type"] => {
+        const text = (meetingType ?? "").toLowerCase();
+        if (text.includes("תרגיל") || text.includes("tutorial")) return "tutorial";
+        if (text.includes("מעבדה") || text.includes("lab")) return "lab";
+        if (text.includes("office")) return "office-hours";
+        return "lecture";
+      };
       const mappedMeetings: CourseMeeting[] = meetings
         .filter((m) => m.weekday && m.start_time && m.end_time)
         .map((m) => ({
@@ -1106,7 +1307,8 @@ export function SchoolOS() {
           end: m.end_time,
           title: m.meeting_type ?? "Lecture",
           location: m.location ?? undefined,
-          type: "lecture"
+          type: inferMeetingKind(m.meeting_type),
+          recurrence: { cadence: "weekly" as const, interval: 1, daysOfWeek: [m.weekday] }
         }));
 
       const normalizedImportedTitle = (imported.nameHe || imported.nameEn || imported.courseNumber)
@@ -1114,16 +1316,55 @@ export function SchoolOS() {
         .replace(/\s+/g, " ")
         .trim();
 
+      const newCourseId = createId("course");
+      const selectedColor = coursePalette[Math.floor(Math.random() * coursePalette.length)];
       addCourse({
+        id: newCourseId,
         name: normalizedImportedTitle,
         code: imported.courseNumber,
         source: imported.source,
         externalCourseId: imported.externalId,
         catalogLastSyncedAt: imported.updatedAt ?? new Date().toISOString(),
-        color: coursePalette[Math.floor(Math.random() * coursePalette.length)],
+        color: selectedColor,
         progressMode: "manual",
         meetings: mappedMeetings
       });
+      if (meetingChoices.length > 0) {
+        const mappedChoiceSets = meetingChoices
+          .filter((set) => (set.options ?? []).length > 1)
+          .map((set) => ({
+            setId: set.setId,
+            label: set.label,
+            options: set.options.map((option) => ({
+              optionId: option.optionId,
+              label: option.label,
+              meetings: (option.meetings ?? [])
+                .filter((m) => m.weekday && m.start_time && m.end_time)
+                .map((m) => ({
+                  id: createId("meeting"),
+                  day: m.weekday,
+                  start: m.start_time,
+                  end: m.end_time,
+                  title: m.meeting_type ?? set.label,
+                  location: m.location ?? undefined,
+                  type: inferMeetingKind(m.meeting_type),
+                  recurrence: { cadence: "weekly" as const, interval: 1, daysOfWeek: [m.weekday] }
+                }))
+            }))
+          }))
+          .filter((set) => set.options.some((option) => option.meetings.length > 0));
+        if (mappedChoiceSets.length > 0) {
+          setPendingSessionChoiceFlow({
+          courseId: newCourseId,
+          courseName: normalizedImportedTitle,
+          courseColor: selectedColor,
+          activeSetIndex: 0,
+          sets: mappedChoiceSets
+          });
+          dispatch({ type: "set-view", payload: "calendar" });
+          setCalendarMode("week");
+        }
+      }
       setIsCatalogPickerOpen(false);
       setCatalogQuery("");
       setIsCourseActionsOpen(false);
@@ -1132,7 +1373,147 @@ export function SchoolOS() {
     } finally {
       setCatalogImportingId(null);
     }
-  }, [addCourse, getAuthHeader]);
+  }, [addCourse, dispatch, getAuthHeader, state.courses]);
+
+  const loadDegreeRoadmapCourses = useCallback(async (degreeId: CatalogDegreeId, showToast = true) => {
+    const requestSeq = degreeLoadRequestSeqRef.current + 1;
+    degreeLoadRequestSeqRef.current = requestSeq;
+    setCatalogDegreeImporting(true);
+    setCatalogError(null);
+    setCatalogResults([]);
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        ...(await getAuthHeader())
+      };
+      const res = await fetch("/api/catalog/import-degree", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ degreeId })
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Degree import failed");
+      }
+      if (degreeLoadRequestSeqRef.current !== requestSeq) {
+        return;
+      }
+      const courses = (payload.courses ?? []) as Array<CatalogSearchCourse & { updatedAt?: string }>;
+      const roadmapCode = typeof payload.roadmapCode === "string" ? payload.roadmapCode : null;
+      setCatalogViewMode("roadmap");
+      setCatalogResults(courses);
+      setCatalogQuery("");
+      setIsCatalogPickerOpen(true);
+      setIsCourseActionsOpen(false);
+      if (showToast) {
+        pushSchoolOsToast({
+          kind: "success",
+          message: courses.length > 0
+            ? `Loaded ${courses.length} roadmap courses${roadmapCode ? ` (${roadmapCode})` : ""}. Use Add course to pick this semester.`
+            : "No roadmap courses found for this degree."
+        });
+      }
+    } catch (error) {
+      if (degreeLoadRequestSeqRef.current !== requestSeq) {
+        return;
+      }
+      setCatalogError(error instanceof Error ? error.message : "Degree import failed");
+    } finally {
+      if (degreeLoadRequestSeqRef.current === requestSeq) {
+        setCatalogDegreeImporting(false);
+      }
+    }
+  }, [getAuthHeader]);
+
+  const importFullDegreePlan = useCallback(async () => {
+    await loadDegreeRoadmapCourses(catalogDegree, true);
+  }, [catalogDegree, loadDegreeRoadmapCourses]);
+
+  useEffect(() => {
+    if (!isCatalogPickerOpen) return;
+    if (catalogQuery.trim().length > 0) return;
+    void loadDegreeRoadmapCourses(catalogDegree, false);
+  }, [catalogDegree, catalogQuery, isCatalogPickerOpen, loadDegreeRoadmapCourses]);
+
+  const groupedRoadmapCourses = useMemo(() => {
+    if (catalogViewMode !== "roadmap") return [];
+    const groups = new Map<string, CatalogSearchCourse[]>();
+    for (const course of catalogResults) {
+      const year = (course.roadmapYearLabel ?? "").trim() || "Other roadmap courses";
+      const section = (course.roadmapSectionLabel ?? "").trim();
+      const key = section ? `${year} · ${section}` : year;
+      const list = groups.get(key) ?? [];
+      list.push(course);
+      groups.set(key, list);
+    }
+    const ordered = [...groups.entries()]
+      .map(([label, courses]) => ({
+        label,
+        courses: [...courses].sort((a, b) => a.courseNumber.localeCompare(b.courseNumber))
+      }))
+      .sort((a, b) => {
+        const aYear = Number((a.label.match(/Year\s+(\d+)/i) ?? [])[1] ?? Number.POSITIVE_INFINITY);
+        const bYear = Number((b.label.match(/Year\s+(\d+)/i) ?? [])[1] ?? Number.POSITIVE_INFINITY);
+        if (aYear !== bYear) return aYear - bYear;
+        return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" });
+      });
+    return ordered;
+  }, [catalogResults, catalogViewMode]);
+
+  const activeChoiceSet = useMemo(() => {
+    if (!pendingSessionChoiceFlow) return null;
+    return pendingSessionChoiceFlow.sets[pendingSessionChoiceFlow.activeSetIndex] ?? null;
+  }, [pendingSessionChoiceFlow]);
+
+  const tentativeCalendarOptions = useMemo(() => {
+    if (!pendingSessionChoiceFlow || !activeChoiceSet) return [];
+    return activeChoiceSet.options.map((option) => ({
+      optionId: option.optionId,
+      label: option.label,
+      courseId: pendingSessionChoiceFlow.courseId,
+      courseName: pendingSessionChoiceFlow.courseName,
+      courseColor: pendingSessionChoiceFlow.courseColor,
+      meetings: option.meetings
+    }));
+  }, [activeChoiceSet, pendingSessionChoiceFlow]);
+
+  const selectTentativeCalendarOption = useCallback((optionId: string) => {
+    if (!pendingSessionChoiceFlow) return;
+    const currentSet = pendingSessionChoiceFlow.sets[pendingSessionChoiceFlow.activeSetIndex];
+    if (!currentSet) return;
+    const picked = currentSet.options.find((option) => option.optionId === optionId);
+    if (!picked) return;
+    const course = state.courses.find((item) => item.id === pendingSessionChoiceFlow.courseId);
+    if (!course) return;
+    const existingKeys = new Set(
+      course.meetings.map((meeting) => `${meeting.day}-${meeting.start}-${meeting.end}-${meeting.title ?? ""}-${meeting.location ?? ""}`)
+    );
+    const nextMeetings = [...course.meetings];
+    for (const meeting of picked.meetings) {
+      const key = `${meeting.day}-${meeting.start}-${meeting.end}-${meeting.title ?? ""}-${meeting.location ?? ""}`;
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      nextMeetings.push(meeting);
+    }
+    dispatch({
+      type: "update-course",
+      payload: {
+        id: course.id,
+        meetings: nextMeetings
+      }
+    });
+    if (pendingSessionChoiceFlow.activeSetIndex >= pendingSessionChoiceFlow.sets.length - 1) {
+      setPendingSessionChoiceFlow(null);
+      pushSchoolOsToast({
+        kind: "success",
+        message: "Session choice saved. Other options were removed."
+      });
+      return;
+    }
+    setPendingSessionChoiceFlow((current) => current
+      ? { ...current, activeSetIndex: current.activeSetIndex + 1 }
+      : current);
+  }, [dispatch, pendingSessionChoiceFlow, state.courses]);
 
   if (!ready) {
     return (
@@ -1147,9 +1528,14 @@ export function SchoolOS() {
       <div className="mx-auto grid min-h-[100dvh] max-w-[1560px] grid-cols-1 gap-5 p-5 lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-1">
         <aside className="animate-fadeSlide space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:pr-0.5">
           <Panel className="bg-white/88 dark:bg-[#101317]/90">
-            <div className="space-y-2">
-              <h1 className="text-[18px] font-semibold tracking-tight">School OS</h1>
-              <p className="text-sm text-slate-500 dark:text-slate-400">7-course command center</p>
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-2">
+                <h1 className="text-[18px] font-semibold tracking-tight">School OS</h1>
+                <p className="text-sm text-slate-500 dark:text-slate-400">7-course command center</p>
+              </div>
+              <Button variant="outline" className="h-8 px-2.5 text-xs" onClick={() => setIsSettingsOpen(true)} data-onboarding="settings-button">
+                <Settings className="h-3.5 w-3.5" />
+              </Button>
             </div>
             <div className="mt-5 space-y-1">
               {navItems.map((item) => {
@@ -1210,36 +1596,41 @@ export function SchoolOS() {
                 )}
               </div>
             </div>
-            <div className="mb-2 grid grid-cols-3 gap-1 rounded-xl border border-slate-200/70 bg-slate-50/60 p-1 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="mb-2 grid grid-cols-2 gap-1.5 rounded-xl border border-slate-200/70 bg-slate-50/60 p-1.5 dark:border-white/10 dark:bg-white/[0.03]">
               <button
                 type="button"
                 onClick={() => setCourseListMode("all")}
-                className={`rounded-lg px-2 py-1.5 text-[11px] transition ${courseListMode === "all" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 dark:text-slate-400"}`}
+                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "all" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
               >
-                All ({activeCourses.length})
+                <p className="text-[11px] font-medium">All</p>
+                <p className="text-[10px] opacity-80">{activeCourses.length}</p>
               </button>
               <button
                 type="button"
                 onClick={() => setCourseListMode("imported")}
-                className={`rounded-lg px-2 py-1.5 text-[11px] transition ${courseListMode === "imported" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 dark:text-slate-400"}`}
+                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "imported" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
               >
-                Imported ({importedCoursesCount})
+                <p className="text-[11px] font-medium">Imported</p>
+                <p className="text-[10px] opacity-80">{importedCoursesCount}</p>
               </button>
               <button
                 type="button"
                 onClick={() => setCourseListMode("manual")}
-                className={`rounded-lg px-2 py-1.5 text-[11px] transition ${courseListMode === "manual" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 dark:text-slate-400"}`}
+                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "manual" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
               >
-                Manual ({manualCoursesCount})
+                <p className="text-[11px] font-medium">Manual</p>
+                <p className="text-[10px] opacity-80">{manualCoursesCount}</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCourseListMode("archived")}
+                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "archived" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
+              >
+                <p className="text-[11px] font-medium">Archived</p>
+                <p className="text-[10px] opacity-80">{archivedCourses.length}</p>
               </button>
             </div>
             <div className="max-h-64 space-y-1.5 overflow-auto pr-1">
-              <button
-                onClick={() => dispatch({ type: "set-course-filter", payload: "all" })}
-                className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${state.ui.selectedCourseId === "all" ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900" : "text-slate-600 hover:bg-slate-100/80 dark:text-slate-300 dark:hover:bg-white/[0.04]"}`}
-              >
-                All Courses
-              </button>
               {visibleCoursesInSidebar.map((course) => {
                 const isActive = state.ui.selectedCourseId === course.id;
                 return (
@@ -1318,10 +1709,6 @@ export function SchoolOS() {
                   <Button variant="outline" onClick={() => setIsUtilityOpen(true)} data-onboarding="guide-button">
                     <BookOpen className="mr-1 h-4 w-4" />
                     Guide
-                  </Button>
-                  <Button variant="outline" onClick={() => setIsSettingsOpen(true)} data-onboarding="settings-button">
-                    <Settings className="mr-1 h-4 w-4" />
-                    Settings
                   </Button>
                 </div>
               </div>
@@ -1412,6 +1799,9 @@ export function SchoolOS() {
               onUpdateWorkBlock={updateWorkBlockWithUndo}
               onDeleteWorkBlock={deleteWorkBlockWithUndo}
               onOpenTask={handleFocusTask}
+              tentativeOptions={tentativeCalendarOptions}
+              tentativeChoiceTitle={activeChoiceSet?.label}
+              onPickTentativeOption={selectTentativeCalendarOption}
             />
           )}
           {state.ui.activeView === "by-course" && <MemoByCourseView tasks={filteredTasks} courses={activeCourses} onToggleDone={toggleTaskDoneWithUndo} onFocus={handleFocusTask} />}
@@ -1428,7 +1818,7 @@ export function SchoolOS() {
               onPublishNote={(id) => dispatch({ type: "publish-class-note", payload: id })}
             />
           )}
-          {["today", "upcoming", "overdue", "list"].includes(state.ui.activeView) && (
+          {state.ui.activeView === "upcoming" && (
             <MemoTaskList
               tasks={filteredTasks}
               courses={state.courses}
@@ -1467,7 +1857,7 @@ export function SchoolOS() {
                 <li>`N` or Hebrew `מ` add task</li>
                 <li>`Cmd/Ctrl + K` search</li>
                 <li>`X` mark focused task done</li>
-                <li>`1`-`9` and `0` switch views without ⌘/Ctrl — same order as the sidebar (⌘+digit is left to the browser for tabs)</li>
+                <li>`1`-`7` switch views without ⌘/Ctrl — same order as the sidebar (⌘+digit is left to the browser for tabs)</li>
               </ul>
               <div className="mt-3 border-t border-slate-200/80 pt-3 dark:border-white/10">
                 <Button
@@ -1514,29 +1904,95 @@ export function SchoolOS() {
               </Button>
             </Panel>
 
-            <Panel className="bg-white/92 dark:bg-[#101317]/92">
-              <h3 className="mb-2 font-semibold">Reminders</h3>
-              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">Offsets (hours): {state.reminderSettings.offsetsHours.join(", ")}</p>
-              <div className="flex flex-wrap gap-1">
-                {[168, 72, 48, 24, 12, 2].map((offset) => {
-                  const active = state.reminderSettings.offsetsHours.includes(offset);
-                  return (
-                    <button
-                      key={offset}
-                      onClick={() => {
-                        const list = active
-                          ? state.reminderSettings.offsetsHours.filter((o) => o !== offset)
-                          : [...state.reminderSettings.offsetsHours, offset];
-                        dispatch({ type: "set-alert-offsets", payload: list.length > 0 ? list : [24] });
-                      }}
-                      className={`rounded-full px-2.5 py-1 text-xs ${active ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900" : "bg-slate-100 text-slate-600 dark:bg-white/[0.05] dark:text-slate-300"}`}
-                    >
-                      {offset}h
-                    </button>
-                  );
-                })}
-              </div>
+            <Panel className="bg-white/92 dark:bg-[#101317]/92" data-onboarding="settings-degree-panel">
+              <h3 className="mb-2 font-semibold">Degree</h3>
+              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">Choose your degree, load roadmap courses, then quick-add only this semester.</p>
+              <select
+                value={catalogDegree}
+                onChange={(event) => setCatalogDegree(event.target.value as CatalogDegreeId)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
+              >
+                {CATALOG_DEGREES.map((degree) => (
+                  <option key={degree.id} value={degree.id}>
+                    {degree.label}
+                  </option>
+                ))}
+              </select>
+              <Button variant="outline" className="mt-3 w-full justify-center" onClick={() => setIsCatalogPickerOpen(true)}>
+                Open HUJI import
+              </Button>
+              <Button className="mt-2 w-full justify-center" onClick={() => void importFullDegreePlan()} disabled={catalogDegreeImporting}>
+                {catalogDegreeImporting ? "Loading roadmap..." : "Load degree roadmap"}
+              </Button>
             </Panel>
+
+            <Panel className="bg-white/92 dark:bg-[#101317]/92" data-onboarding="feature-request-panel">
+              <h3 className="mb-2 font-semibold">Request a missing feature</h3>
+              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">Tell us what is missing and attach screenshots.</p>
+              <textarea
+                value={featureRequestMessage}
+                onChange={(event) => setFeatureRequestMessage(event.target.value)}
+                onPaste={(event) => void onFeatureRequestPaste(event)}
+                placeholder="What feature is missing for you? You can paste screenshots here."
+                rows={4}
+                dir="auto"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-start outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
+              />
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                Paste screenshots directly into the box (up to {MAX_FEATURE_REQUEST_SCREENSHOTS}).
+              </p>
+              {featureRequestShots.length > 0 && (
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {featureRequestShots.map((shot, idx) => (
+                    <div key={`${shot.name}-${idx}`} className="overflow-hidden rounded-lg border border-slate-200/80 dark:border-white/10">
+                      <img src={shot.dataUrl} alt={shot.name} className="h-16 w-full object-cover" />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {featureRequestError && <p className="mt-2 text-xs text-rose-500">{featureRequestError}</p>}
+              {featureRequestSuccess && <p className="mt-2 text-xs text-emerald-500">{featureRequestSuccess}</p>}
+              <Button className="mt-3 w-full justify-center" onClick={() => void submitFeatureRequest()} disabled={featureRequestSending}>
+                {featureRequestSending ? "Sending..." : "Send request"}
+              </Button>
+            </Panel>
+
+            {isAdmin && (
+              <Panel className="bg-white/92 dark:bg-[#101317]/92">
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="font-semibold">User feature requests</h3>
+                  <Button variant="outline" className="h-7 px-2 text-xs" onClick={() => void loadAdminFeatureRequests()} disabled={adminRequestsLoading}>
+                    Refresh
+                  </Button>
+                </div>
+                {adminRequestsError && <p className="mb-2 text-xs text-rose-500">{adminRequestsError}</p>}
+                <div className="space-y-2">
+                  {adminRequestsLoading ? (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Loading requests...</p>
+                  ) : adminFeatureRequests.length === 0 ? (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">No requests yet.</p>
+                  ) : (
+                    adminFeatureRequests.map((request) => (
+                      <div key={request.id} className="rounded-xl border border-slate-200/80 p-2.5 dark:border-white/10">
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                          {request.user_email} · {new Date(request.created_at).toLocaleString()}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{request.message}</p>
+                        {request.screenshots?.length > 0 && (
+                          <div className="mt-2 grid grid-cols-3 gap-2">
+                            {request.screenshots.slice(0, 3).map((shot, idx) => (
+                              <a key={`${request.id}-${idx}`} href={shot.dataUrl} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-slate-200/80 dark:border-white/10">
+                                <img src={shot.dataUrl} alt={shot.name || "feature request screenshot"} className="h-14 w-full object-cover" />
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </Panel>
+            )}
           </aside>
         </div>
       )}
@@ -1763,9 +2219,9 @@ export function SchoolOS() {
           <Panel className="w-full max-w-3xl bg-white/95 p-5 dark:bg-[#101317]/95">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-base font-semibold">HUJI Catalog (Life Sciences / Biology)</h3>
+                <h3 className="text-base font-semibold">HUJI Catalog Import</h3>
                 <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                  Search by course number or name and import directly to your calendar.
+                  Search by course number or name, or load your degree roadmap and quick-add selected courses.
                 </p>
               </div>
               <Button
@@ -1780,25 +2236,47 @@ export function SchoolOS() {
               </Button>
             </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <div className="relative min-w-[280px] flex-1">
+            <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-[280px_minmax(0,1fr)_auto] md:items-end">
+              <div className="min-w-0">
+                <label className="mb-1 block px-1 text-xs font-medium text-slate-600 dark:text-slate-300">Degree</label>
+                <select
+                  value={catalogDegree}
+                  onChange={(event) => {
+                    const nextDegree = event.target.value as CatalogDegreeId;
+                    setCatalogDegree(nextDegree);
+                    setCatalogQuery("");
+                    void loadDegreeRoadmapCourses(nextDegree, false);
+                  }}
+                  data-onboarding="degree-select"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
+                >
+                  {CATALOG_DEGREES.map((degree) => (
+                    <option key={degree.id} value={degree.id}>
+                      {degree.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="relative min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
                   value={catalogQuery}
                   onChange={(event) => setCatalogQuery(event.target.value)}
                   placeholder="Search HUJI course number or name..."
-                  className="w-full rounded-full border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-4 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
+                  className="h-[42px] w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-4 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
                 />
               </div>
-              <Button variant="outline" onClick={refreshCatalog} disabled={catalogRefreshing}>
+              <Button variant="outline" className="h-[42px] px-4 md:self-end" onClick={refreshCatalog} disabled={catalogRefreshing}>
                 {catalogRefreshing ? "Refreshing..." : "Refresh catalog"}
               </Button>
             </div>
 
-            <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-              {catalogFreshness?.lastCompletedAt
+            <div className="mb-3 rounded-lg border border-slate-200/70 bg-slate-50/60 px-3 py-2 text-xs text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
+              {`Degree catalog: ${CATALOG_DEGREES.find((d) => d.id === catalogDegree)?.label ?? catalogDegree}.`
+                + " "
+                + (catalogFreshness?.lastCompletedAt
                 ? `Catalog updated ${new Date(catalogFreshness.lastCompletedAt).toLocaleString()} (${catalogFreshness.fetchedCount} courses).`
-                : "Catalog not synced yet. Use refresh catalog to ingest latest data."}
+                : "Catalog not synced yet. Use refresh catalog to ingest latest data.")}
             </div>
 
             {catalogError && (
@@ -1812,6 +2290,46 @@ export function SchoolOS() {
                 <p className="text-sm text-slate-500 dark:text-slate-400">Searching catalog...</p>
               ) : catalogResults.length === 0 ? (
                 <p className="text-sm text-slate-500 dark:text-slate-400">No courses found for your query.</p>
+              ) : catalogViewMode === "roadmap" ? (
+                groupedRoadmapCourses.map((group) => (
+                  <details key={group.label} open className="rounded-2xl border border-slate-200/70 bg-white/40 p-2 dark:border-white/10 dark:bg-white/[0.02]">
+                    <summary className="cursor-pointer list-none rounded-xl px-2 py-1.5 text-sm font-semibold text-slate-800 transition hover:bg-slate-100/70 dark:text-slate-100 dark:hover:bg-white/[0.05]">
+                      {group.label} ({group.courses.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {group.courses.map((course) => (
+                        <div key={`${course.source}:${course.externalId}`} className="rounded-2xl border border-slate-200/70 px-3 py-3 dark:border-white/10">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                {course.courseNumber} · {course.nameHe || course.nameEn || course.title || "Unnamed course"}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                {course.faculty || "HUJI"} · {course.department || "Life Sciences"} · {course.meetings.length} meetings
+                              </p>
+                              {course.meetings.length > 0 && (
+                                <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">
+                                  {course.meetings
+                                    .slice(0, 3)
+                                    .map((m) => `${m.weekday} ${m.start_time}-${m.end_time}`)
+                                    .join(" | ")}
+                                </p>
+                              )}
+                            </div>
+                            <Button
+                              variant="outline"
+                              className="shrink-0"
+                              onClick={() => importCatalogCourse(course)}
+                              disabled={catalogImportingId === course.externalId}
+                            >
+                              {catalogImportingId === course.externalId ? "Importing..." : "Add course"}
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))
               ) : (
                 catalogResults.map((course) => (
                   <div key={`${course.source}:${course.externalId}`} className="rounded-2xl border border-slate-200/70 px-3 py-3 dark:border-white/10">
@@ -1900,6 +2418,15 @@ export function SchoolOS() {
             dispatch({ type: "set-course-filter", payload: "all" });
             setIsCourseEditorOpen(false);
           }}
+          onDelete={() => {
+            const confirmed = window.confirm(
+              "Delete this course permanently? This will also delete related tasks, work blocks, and class notes."
+            );
+            if (!confirmed) return;
+            dispatch({ type: "delete-course", payload: selectedCourse.id });
+            dispatch({ type: "set-course-filter", payload: "all" });
+            setIsCourseEditorOpen(false);
+          }}
         />
       )}
 
@@ -1985,7 +2512,7 @@ export function SchoolOS() {
           onJump={(result) => {
             if (result.kind === "task") {
               dispatch({ type: "set-focus", payload: result.id });
-              dispatch({ type: "set-view", payload: "list" });
+              dispatch({ type: "set-view", payload: "upcoming" });
             } else {
               dispatch({ type: "set-course-filter", payload: result.id });
               dispatch({ type: "set-view", payload: "by-course" });
@@ -2533,7 +3060,10 @@ function CalendarView({
   onAddWorkBlock,
   onUpdateWorkBlock,
   onDeleteWorkBlock,
-  onOpenTask
+  onOpenTask,
+  tentativeOptions,
+  tentativeChoiceTitle,
+  onPickTentativeOption
 }: {
   tasks: Task[];
   workBlocks: WorkBlock[];
@@ -2550,6 +3080,16 @@ function CalendarView({
   onUpdateWorkBlock: (block: Partial<WorkBlock> & { id: string }) => void;
   onDeleteWorkBlock: (id: string) => void;
   onOpenTask: (taskId: string) => void;
+  tentativeOptions?: Array<{
+    optionId: string;
+    label: string;
+    courseId: string;
+    courseName: string;
+    courseColor: string;
+    meetings: CourseMeeting[];
+  }>;
+  tentativeChoiceTitle?: string;
+  onPickTentativeOption?: (optionId: string) => void;
 }) {
   const visibleCourses = useMemo(() => courses.filter((course) => visibleCourseIds.includes(course.id)), [courses, visibleCourseIds]);
   const courseMap = useMemo(() => Object.fromEntries(courses.map((course) => [course.id, course])), [courses]);
@@ -2582,6 +3122,25 @@ function CalendarView({
     () => expandMeetingOccurrences(visibleCourses, rangeStart, rangeEnd),
     [visibleCourses, rangeStart, rangeEnd]
   );
+  const tentativeOccurrences = useMemo(() => {
+    if (!tentativeOptions?.length) return [];
+    const pseudoCourses: Course[] = tentativeOptions.map((option) => ({
+      id: option.optionId,
+      name: `${option.courseName} (${option.label})`,
+      code: option.optionId,
+      color: option.courseColor,
+      archived: false,
+      notes: "",
+      meetings: option.meetings,
+      grading: [],
+      progressMode: "manual",
+      manualProgress: 0,
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    }));
+    return expandMeetingOccurrences(pseudoCourses, rangeStart, rangeEnd);
+  }, [rangeEnd, rangeStart, tentativeOptions]);
+  const tentativeByDate = useMemo(() => groupOccurrencesByDate(tentativeOccurrences), [tentativeOccurrences]);
   const sessionByDate = groupOccurrencesByDate(sessionOccurrences);
   const taskByDay = useMemo(() => {
     return tasks.reduce<Record<string, Task[]>>((acc, task) => {
@@ -2681,6 +3240,7 @@ function CalendarView({
   const weekTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dayTransition, setDayTransition] = useState<{ direction: "prev" | "next"; fromDate: Date; toDate: Date } | null>(null);
   const [dayTransitionActive, setDayTransitionActive] = useState(false);
+  const [hoveredTentativeOptionId, setHoveredTentativeOptionId] = useState<string | null>(null);
   const dayTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const calendarScrollTopRef = useRef<number | null>(null);
   const syncedCalendarScrollElsRef = useRef<WeakSet<Element>>(new WeakSet());
@@ -2690,6 +3250,11 @@ function CalendarView({
     dragPreview: { id: string; startMinutes: number; endMinutes: number; dateKey?: string } | null;
     resizePreview: { id: string; startMinutes: number; endMinutes: number; dateKey?: string } | null;
   }>({ dragPreview: null, resizePreview: null });
+
+  useEffect(() => {
+    if ((tentativeOptions?.length ?? 0) > 0) return;
+    setHoveredTentativeOptionId(null);
+  }, [tentativeOptions]);
 
   const syncCalendarScrollEl = useCallback((el: HTMLDivElement | null) => {
     if (!el) return;
@@ -3360,14 +3925,15 @@ function CalendarView({
                         }}
                         onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
                         dir="auto"
-                        className="absolute overflow-hidden rounded-2xl border px-3 py-2 text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)]"
+                        className="absolute overflow-hidden rounded-2xl border px-3 py-2 text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity"
                         style={{
                           ...softCourseStyle(session.course.color),
                           top,
                           height,
                           borderColor: `${session.course.color}50`,
                           left: `calc(${(session.column / session.totalColumns) * 100}% + 6px)`,
-                          width: `calc(${100 / session.totalColumns}% - 12px)`
+                          width: `calc(${100 / session.totalColumns}% - 12px)`,
+                          opacity: hoveredTentativeOptionId ? 0.22 : 1
                         }}
                       >
                         <p className="truncate font-semibold text-slate-900 dark:text-white">{session.course.name}</p>
@@ -3377,6 +3943,44 @@ function CalendarView({
                       </button>
                     );
                   })}
+                  {(tentativeByDate[key] ?? [])
+                    .filter((item) => !item.meeting.isAllDay)
+                    .map((session) => {
+                      const startHour = parseTimeValue(session.meeting.start);
+                      const endHour = parseTimeValue(session.meeting.end);
+                      const top = Math.max(0, (startHour - timelineHours[0]) * 80);
+                      const height = Math.max(28, (endHour - startHour) * 80);
+                      return (
+                        <button
+                          key={`tentative-${session.instanceKey}`}
+                          type="button"
+                          onClick={() => onPickTentativeOption?.(session.course.id)}
+                          onMouseEnter={() => setHoveredTentativeOptionId(session.course.id)}
+                          onMouseLeave={() => setHoveredTentativeOptionId((current) => (current === session.course.id ? null : current))}
+                          className="absolute left-[10px] right-[10px] z-[14] overflow-hidden rounded-2xl border-2 border-amber-400/80 bg-amber-100/35 px-3 py-2 text-start text-xs shadow-[0_0_0_1px_rgba(251,191,36,0.45),0_0_26px_rgba(251,191,36,0.45)] transition-all dark:bg-amber-400/15"
+                          style={{
+                            top,
+                            height,
+                            opacity: hoveredTentativeOptionId && hoveredTentativeOptionId !== session.course.id ? 0.3 : 1,
+                            transform: hoveredTentativeOptionId === session.course.id ? "scale(1.015)" : "scale(1)"
+                          }}
+                        >
+                          <p className="truncate font-semibold text-amber-900 dark:text-amber-100">Tentative: {session.course.name}</p>
+                          <p className="mt-1 text-[11px] text-amber-800 dark:text-amber-200">{session.meeting.start} - {session.meeting.end}</p>
+                          {session.meeting.location && (
+                            <p className="truncate text-[11px] text-amber-800 dark:text-amber-200">{session.meeting.location}</p>
+                          )}
+                          {hoveredTentativeOptionId === session.course.id && (
+                            <div className="mt-2 rounded-lg bg-white/75 p-2 text-[11px] text-amber-950 dark:bg-black/30 dark:text-amber-100">
+                              <p className="font-semibold">{session.meeting.title || "Session option"}</p>
+                              <p className="mt-1">{session.meeting.day} {session.meeting.start} - {session.meeting.end}</p>
+                              {session.meeting.location && <p className="mt-1">{session.meeting.location}</p>}
+                              <p className="mt-1 opacity-80">Click to choose this option</p>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
                   {dayWorkBlocks.map((block) => {
                     const sourceKey = formatDateKey(new Date(block.startAt));
                     if (sourceKey !== key) return null;
@@ -3527,6 +4131,11 @@ function CalendarView({
         <div>
           <h3 className="font-semibold">{calendarTitle}</h3>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{calendarSubtitle}</p>
+          {tentativeOptions && tentativeOptions.length > 0 && (
+            <p className="mt-2 text-xs font-medium text-amber-600 dark:text-amber-300">
+              Choose one option for {tentativeChoiceTitle ?? "session group"} by clicking a glowing tentative block.
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 px-1 py-1 dark:border-white/10 dark:bg-white/[0.03]">
@@ -4994,7 +5603,8 @@ function CourseEditorModal({
   setEditColor,
   onClose,
   onSave,
-  onArchive
+  onArchive,
+  onDelete
 }: {
   editName: string;
   setEditName: (value: string) => void;
@@ -5013,6 +5623,7 @@ function CourseEditorModal({
   onClose: () => void;
   onSave: () => void;
   onArchive: () => void;
+  onDelete: () => void;
 }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={onClose}>
@@ -5058,7 +5669,10 @@ function CourseEditorModal({
           <textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder="Course notes" className="min-h-[120px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none md:col-span-2 dark:border-white/10 dark:bg-white/[0.04]" />
         </div>
         <div className="mt-4 flex justify-between">
-          <Button variant="outline" className="text-rose-500" onClick={onArchive}>Archive</Button>
+          <div className="flex gap-2">
+            <Button variant="outline" className="text-rose-500" onClick={onArchive}>Archive</Button>
+            <Button variant="outline" className="text-rose-600" onClick={onDelete}>Delete</Button>
+          </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={onClose}>Close</Button>
             <Button onClick={onSave}>Save changes</Button>

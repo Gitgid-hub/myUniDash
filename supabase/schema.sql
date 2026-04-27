@@ -125,3 +125,32 @@ create policy "Users can insert own imported courses"
   for insert
   to authenticated
   with check (auth.uid() = user_id);
+
+create table if not exists public.feature_requests (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  user_email text not null,
+  message text not null,
+  screenshots jsonb not null default '[]'::jsonb,
+  status text not null default 'open',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists feature_requests_created_at_idx on public.feature_requests (created_at desc);
+create index if not exists feature_requests_user_id_idx on public.feature_requests (user_id, created_at desc);
+
+alter table public.feature_requests enable row level security;
+
+drop policy if exists "Users can insert own feature requests" on public.feature_requests;
+create policy "Users can insert own feature requests"
+  on public.feature_requests
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can read own feature requests" on public.feature_requests;
+create policy "Users can read own feature requests"
+  on public.feature_requests
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
