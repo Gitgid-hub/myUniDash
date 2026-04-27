@@ -11,10 +11,10 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
   },
   {
     id: "account",
-    title: "Your account area",
-    body: "This panel shows your signed-in account. You can also sign out here.",
-    targetSelector: "[data-onboarding='account-panel']",
-    action: "clickTarget",
+    title: "Open settings",
+    body: "Use Settings for your account details, sign out, and essential preferences.",
+    targetSelector: "[data-onboarding='settings-button']",
+    action: "none",
     placement: "bottom",
     ensureView: "dashboard"
   },

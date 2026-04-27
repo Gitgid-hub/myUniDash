@@ -22,6 +22,7 @@ import {
   Paperclip,
   Plus,
   Search,
+  Settings,
   Sun,
   Timer,
   Trash2,
@@ -48,8 +49,6 @@ import {
 import { formatDue, formatWeekOfLabel, getWeekKey, isOverdue, isToday, nowIso, startOfDay } from "@/lib/date";
 import {
   completedByWeek,
-  getCourseHealth,
-  getCourseProgress,
   getOverdueTasks,
   getTodayTasks,
   getUpcomingTasks,
@@ -73,6 +72,7 @@ import type {
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { Badge, Button, Panel } from "@/components/ui";
 import { createId } from "@/lib/id";
+import { useAuth } from "@/lib/auth";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { CalendarHolidayChip } from "@/lib/calendar-holidays";
 import { indexHolidayChipsByDate, readCachedHolidayYear, writeCachedHolidayYear } from "@/lib/calendar-holidays";
@@ -270,6 +270,12 @@ type CalendarUndoEntry =
   | { type: "replace-work-block"; block: WorkBlock }
   | { type: "insert-work-block"; block: WorkBlock };
 
+type TaskUndoEntry = {
+  id: string;
+  status: TaskStatus;
+  completedAt?: string;
+};
+
 interface CatalogSearchMeeting {
   weekday: WeekDay;
   start_time: string;
@@ -313,6 +319,7 @@ function isTaskBlockUnderway(taskId: string, workBlocks: WorkBlock[], nowTs = Da
 
 export function SchoolOS() {
   const { state, ready, dispatch, addTask, updateTask, toggleTaskDone, addCourse } = useSchoolStore();
+  const { user } = useAuth();
   usePruneClassNoteAttachmentBlobs(state.classNotes);
   const [quickTaskSearch, setQuickTaskSearch] = useState("");
   const [kanbanTab, setKanbanTab] = useState<"board" | "completed">("board");
@@ -331,6 +338,8 @@ export function SchoolOS() {
   const [editManualProgress, setEditManualProgress] = useState(0);
   const [editColor, setEditColor] = useState(coursePalette[0]);
   const [isUtilityOpen, setIsUtilityOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const [isAddCourseOpen, setIsAddCourseOpen] = useState(false);
   const [isCatalogPickerOpen, setIsCatalogPickerOpen] = useState(false);
   const [isCourseActionsOpen, setIsCourseActionsOpen] = useState(false);
@@ -341,6 +350,7 @@ export function SchoolOS() {
   const promptedWorkBlocksRef = useRef<Set<string>>(new Set());
   const endedWorkBlockPromptCooldownUntilRef = useRef(0);
   const calendarUndoStackRef = useRef<CalendarUndoEntry[]>([]);
+  const taskUndoStackRef = useRef<TaskUndoEntry[]>([]);
   const [sessionDraft, setSessionDraft] = useState<{ courseId?: string; meetingId?: string; anchorDate?: Date; start?: string; end?: string } | undefined>();
   const [sessionHub, setSessionHub] = useState<{ courseId: string; meetingId: string; anchorDate: Date } | null>(null);
   const [classNoteEditorId, setClassNoteEditorId] = useState<string | null>(null);
@@ -431,6 +441,33 @@ export function SchoolOS() {
     dispatch({ type: "delete-work-block", payload: id });
   }, [dispatch, pushCalendarUndoEntry, state.workBlocks]);
 
+  const toggleTaskDoneWithUndo = useCallback((id: string) => {
+    const previous = state.tasks.find((task) => task.id === id);
+    if (!previous) return;
+    taskUndoStackRef.current.push({
+      id: previous.id,
+      status: previous.status,
+      completedAt: previous.completedAt
+    });
+    if (taskUndoStackRef.current.length > 80) {
+      taskUndoStackRef.current.shift();
+    }
+    toggleTaskDone(id);
+  }, [state.tasks, toggleTaskDone]);
+
+  const undoTaskToggle = useCallback(() => {
+    const previous = taskUndoStackRef.current.pop();
+    if (!previous) return;
+    dispatch({
+      type: "update-task",
+      payload: {
+        id: previous.id,
+        status: previous.status,
+        completedAt: previous.completedAt
+      }
+    });
+  }, [dispatch]);
+
   useKeyboardShortcuts({
     openComposer: () => dispatch({ type: "set-composer", payload: true }),
     openSessionComposer: () => {
@@ -439,9 +476,10 @@ export function SchoolOS() {
     },
     openSearch: () => dispatch({ type: "set-search", payload: true }),
     undoCalendarChange,
+    undoTaskToggle,
     markFocusedDone: () => {
       if (state.ui.focusedTaskId) {
-        toggleTaskDone(state.ui.focusedTaskId);
+        toggleTaskDoneWithUndo(state.ui.focusedTaskId);
       }
     },
     switchView: (view) => dispatch({ type: "set-view", payload: view }),
@@ -512,6 +550,18 @@ export function SchoolOS() {
     if (!onboardingActive) return;
     setOnboardingStepIndex((n) => Math.max(0, n - 1));
   }, [onboardingActive]);
+
+  const handleSignOut = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    setIsSigningOut(true);
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      setIsSigningOut(false);
+      setIsSettingsOpen(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!onboardingActive) return;
@@ -694,9 +744,46 @@ export function SchoolOS() {
     };
   }, [endedWorkBlockId, ready, state.workBlocks]);
 
-  const weeklyWorkload = useMemo(() => getWorkloadThisWeek(state.tasks), [state.tasks]);
   const overdueCount = useMemo(() => getOverdueTasks(state.tasks).length, [state.tasks]);
-  const upcomingCount = useMemo(() => getUpcomingTasks(state.tasks).length, [state.tasks]);
+  const dueTodayCount = useMemo(() => getTodayTasks(state.tasks).filter((task) => task.status !== "done").length, [state.tasks]);
+  const upcomingClass = useMemo(() => {
+    const now = new Date();
+    const occurrences = expandMeetingOccurrences(activeCourses, now, addDays(now, 14));
+      const next = occurrences
+      .map((occurrence) => {
+        const [hour, minute] = occurrence.meeting.start.split(":").map((part) => Number(part));
+        const startAt = new Date(occurrence.date);
+        startAt.setHours(Number.isFinite(hour) ? hour : 0, Number.isFinite(minute) ? minute : 0, 0, 0);
+        return { occurrence, startAt };
+      })
+      .filter((item) => item.startAt.getTime() >= now.getTime())
+      .sort((a, b) => a.startAt.getTime() - b.startAt.getTime())[0];
+    if (!next) return null;
+    const startLabel = next.startAt.toLocaleString(undefined, {
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+    return {
+      code: next.occurrence.course.code || next.occurrence.course.name,
+      name: next.occurrence.course.name,
+      detail: startLabel,
+      color: next.occurrence.course.color
+    };
+  }, [activeCourses]);
+  const topPriorityTask = useMemo(() => {
+    const priorityRank: Record<TaskPriority, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+    const candidates = state.tasks.filter((task) => task.status !== "done");
+    if (candidates.length === 0) return null;
+    const sorted = [...candidates].sort((a, b) => {
+      const rankDiff = priorityRank[a.priority] - priorityRank[b.priority];
+      if (rankDiff !== 0) return rankDiff;
+      const dueA = a.dueAt ? new Date(a.dueAt).getTime() : Number.MAX_SAFE_INTEGER;
+      const dueB = b.dueAt ? new Date(b.dueAt).getTime() : Number.MAX_SAFE_INTEGER;
+      return dueA - dueB;
+    });
+    return sorted[0] ?? null;
+  }, [state.tasks]);
   const completedThisWeek = useMemo(() => {
     const map = completedByWeek(state.tasks);
     const key = getWeekKey(nowIso());
@@ -763,9 +850,9 @@ export function SchoolOS() {
       if (!task) {
         return;
       }
-      toggleTaskDone(id);
+      toggleTaskDoneWithUndo(id);
     },
-    [state.tasks, toggleTaskDone]
+    [state.tasks, toggleTaskDoneWithUndo]
   );
   const handleFocusTask = useCallback((id: string) => {
     dispatch({ type: "set-focus", payload: id });
@@ -1233,6 +1320,10 @@ export function SchoolOS() {
                     <BookOpen className="mr-1 h-4 w-4" />
                     Guide
                   </Button>
+                  <Button variant="outline" onClick={() => setIsSettingsOpen(true)} data-onboarding="settings-button">
+                    <Settings className="mr-1 h-4 w-4" />
+                    Settings
+                  </Button>
                 </div>
               </div>
             </Panel>
@@ -1241,19 +1332,45 @@ export function SchoolOS() {
           {state.ui.activeView === "dashboard" && (
             <>
               <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <MetricCard title="Effort next 7d" value={`${weeklyWorkload} pts`} note="Sum of your task effort estimates." icon={Timer} />
+                <MetricCard title="Due Today" value={`${dueTodayCount}`} note="Tasks still open for today." icon={Timer} />
                 <MetricCard title="Overdue" value={`${overdueCount}`} icon={TriangleAlert} tone="warn" />
-                <MetricCard title="Upcoming" value={`${upcomingCount}`} icon={CalendarDays} />
-                <MetricCard title="Completed (7d)" value={`${completedThisWeek}`} icon={Check} tone="ok" />
+                <Panel
+                  className="bg-white/90 dark:bg-[#101317]/90"
+                  style={
+                    upcomingClass
+                      ? {
+                          borderColor: `${upcomingClass.color}66`,
+                          boxShadow: `inset 0 0 0 1px ${upcomingClass.color}33`
+                        }
+                      : undefined
+                  }
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-slate-500 dark:text-slate-400">Upcoming Class</p>
+                    <CalendarDays className="h-4 w-4 text-slate-400" />
+                  </div>
+                  <p className="mt-3 line-clamp-1 text-base font-semibold tracking-[-0.01em]">
+                    {upcomingClass ? upcomingClass.name : "No classes scheduled soon."}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{upcomingClass ? upcomingClass.code : ""}</p>
+                  {upcomingClass ? (
+                    <p className="mt-1 text-xs font-medium text-slate-600 dark:text-slate-300">{upcomingClass.detail}</p>
+                  ) : null}
+                </Panel>
+                <MetricCard
+                  title="Top Priority"
+                  value={topPriorityTask ? topPriorityTask.priority.toUpperCase() : "NONE"}
+                  note={topPriorityTask ? topPriorityTask.title : "No pending tasks right now."}
+                  icon={Star}
+                />
               </section>
               <MemoDashboardView
                 courses={activeCourses}
-                tasks={filteredTasks}
+                tasks={filteredTasks.filter((task) => task.status !== "done")}
                 workBlocks={state.workBlocks}
-                onToggleDone={toggleTaskDone}
+                onToggleDone={toggleTaskDoneWithUndo}
                 onFocus={handleFocusTask}
                 focusedTaskId={state.ui.focusedTaskId}
-                allTasks={state.tasks}
                 analytics={analytics}
               />
             </>
@@ -1298,8 +1415,8 @@ export function SchoolOS() {
               onOpenTask={handleFocusTask}
             />
           )}
-          {state.ui.activeView === "by-course" && <MemoByCourseView tasks={filteredTasks} courses={activeCourses} onToggleDone={toggleTaskDone} onFocus={handleFocusTask} />}
-          {state.ui.activeView === "by-priority" && <MemoByPriorityView tasks={filteredTasks} onToggleDone={toggleTaskDone} onFocus={handleFocusTask} />}
+          {state.ui.activeView === "by-course" && <MemoByCourseView tasks={filteredTasks} courses={activeCourses} onToggleDone={toggleTaskDoneWithUndo} onFocus={handleFocusTask} />}
+          {state.ui.activeView === "by-priority" && <MemoByPriorityView tasks={filteredTasks} onToggleDone={toggleTaskDoneWithUndo} onFocus={handleFocusTask} />}
           {state.ui.activeView === "class-notes" && (
             <MemoClassNotesPanel
               courses={state.courses}
@@ -1317,7 +1434,7 @@ export function SchoolOS() {
               tasks={filteredTasks}
               courses={state.courses}
               workBlocks={state.workBlocks}
-              onToggleDone={toggleTaskDone}
+              onToggleDone={toggleTaskDoneWithUndo}
               onFocus={handleFocusTask}
               focusedTaskId={state.ui.focusedTaskId}
               title={viewTitle(state.ui.activeView)}
@@ -1365,6 +1482,60 @@ export function SchoolOS() {
                 >
                   Replay onboarding
                 </Button>
+              </div>
+            </Panel>
+          </aside>
+        </div>
+      )}
+
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-40">
+          <button
+            type="button"
+            aria-label="Close settings drawer"
+            className="absolute inset-0 bg-slate-950/18 backdrop-blur-[1px] dark:bg-black/35"
+            onClick={() => setIsSettingsOpen(false)}
+          />
+          <aside className="absolute inset-y-4 right-4 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-4 overflow-y-auto rounded-[32px] border border-slate-200/80 bg-[#f7f8fa]/96 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#0f1115]/96 dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]">
+            <div className="flex items-center justify-between px-1">
+              <div>
+                <h3 className="text-lg font-semibold tracking-tight">Settings</h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400">Account and essential preferences.</p>
+              </div>
+              <Button variant="ghost" onClick={() => setIsSettingsOpen(false)} className="h-10 w-10 p-0">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <Panel className="bg-white/92 dark:bg-[#101317]/92" data-onboarding="account-panel">
+              <h3 className="mb-2 font-semibold">Account</h3>
+              <p className="text-sm text-slate-600 dark:text-slate-300">{user?.email ?? "Signed in"}</p>
+              <Button variant="outline" className="mt-3 w-full justify-center" onClick={() => void handleSignOut()} disabled={isSigningOut}>
+                {isSigningOut ? "Signing out..." : "Sign out"}
+              </Button>
+            </Panel>
+
+            <Panel className="bg-white/92 dark:bg-[#101317]/92">
+              <h3 className="mb-2 font-semibold">Reminders</h3>
+              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">Offsets (hours): {state.reminderSettings.offsetsHours.join(", ")}</p>
+              <div className="flex flex-wrap gap-1">
+                {[168, 72, 48, 24, 12, 2].map((offset) => {
+                  const active = state.reminderSettings.offsetsHours.includes(offset);
+                  return (
+                    <button
+                      key={offset}
+                      onClick={() => {
+                        const list = active
+                          ? state.reminderSettings.offsetsHours.filter((o) => o !== offset)
+                          : [...state.reminderSettings.offsetsHours, offset];
+                        dispatch({ type: "set-alert-offsets", payload: list.length > 0 ? list : [24] });
+                      }}
+                      className={`rounded-full px-2.5 py-1 text-xs ${active ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900" : "bg-slate-100 text-slate-600 dark:bg-white/[0.05] dark:text-slate-300"}`}
+                    >
+                      {offset}h
+                    </button>
+                  );
+                })}
               </div>
             </Panel>
           </aside>
@@ -1835,7 +2006,6 @@ function DashboardView({
   onToggleDone,
   onFocus,
   focusedTaskId,
-  allTasks,
   analytics
 }: {
   courses: Course[];
@@ -1844,7 +2014,6 @@ function DashboardView({
   onToggleDone: (id: string) => void;
   onFocus: (id: string) => void;
   focusedTaskId?: string;
-  allTasks: Task[];
   analytics: { completed: Record<string, number>; workload: Array<{ name: string; total: number; color: string }> };
 }) {
   return (
@@ -1859,33 +2028,6 @@ function DashboardView({
         title="Priority Queue"
       />
       <div className="space-y-3">
-        <Panel className="bg-white/90 dark:bg-[#101317]/90">
-          <div className="mb-4 flex items-end justify-between">
-            <h3 className="text-base font-semibold">Course Health</h3>
-          </div>
-          <div className="space-y-3">
-            {courses.map((course) => {
-              const health = getCourseHealth(course, allTasks);
-              const progress = getCourseProgress(course, allTasks);
-              return (
-                <div key={course.id} className="rounded-2xl border border-slate-200/80 p-3 dark:border-white/10">
-                  <div className="mb-1 flex items-center justify-between text-sm">
-                    <span className="font-medium">{course.code}</span>
-                    <span className={health === "risk" ? "text-rose-500" : health === "watch" ? "text-amber-500" : "text-emerald-500"}>{health}</span>
-                  </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
-                    <div style={{ width: `${progress}%`, background: course.color }} className="h-full rounded-full" />
-                  </div>
-                  <div className="mt-2 flex justify-between text-xs text-slate-500">
-                    <span>{course.progressMode === "manual" ? "manual progress" : "task-based progress"}</span>
-                    <span>{progress}%</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Panel>
-
         <Panel className="bg-white/90 dark:bg-[#101317]/90">
           <h3 className="mb-3 text-base font-semibold">Weekly Completions</h3>
           <div className="flex items-end gap-2">

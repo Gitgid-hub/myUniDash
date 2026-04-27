@@ -8,6 +8,7 @@ interface ShortcutHandlers {
   openSessionComposer: () => void;
   openSearch: () => void;
   undoCalendarChange: () => void;
+  undoTaskToggle: () => void;
   markFocusedDone: () => void;
   switchView: (view: MainView) => void;
   setFocusedTask: (id?: ID) => void;
@@ -30,9 +31,13 @@ const VIEW_KEYS: Record<string, MainView> = {
 export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z" && handlers.getActiveView() === "calendar") {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
-        handlers.undoCalendarChange();
+        if (handlers.getActiveView() === "calendar") {
+          handlers.undoCalendarChange();
+        } else {
+          handlers.undoTaskToggle();
+        }
         return;
       }
 
