@@ -65,9 +65,19 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     ensureView: "kanban"
   },
   {
+    id: "guide",
+    title: "Open the guide",
+    body: "Use Guide to find keyboard shortcuts and replay onboarding anytime.",
+    targetSelector: "[data-onboarding='guide-button']",
+    action: "none",
+    placement: "bottom",
+    ensureView: "dashboard",
+    ensureUtilityOpen: false
+  },
+  {
     id: "done",
     title: "You're ready",
-    body: "That is the core workflow. You can replay this tour anytime from Agenda → Keyboard.",
+    body: "That is the core workflow. You can replay this tour anytime from Guide.",
     action: "none",
     placement: "auto",
     ensureView: "dashboard"

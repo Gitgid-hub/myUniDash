@@ -3,7 +3,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import {
-  AlarmClock,
   BarChart3,
   BookOpen,
   CalendarDays,
@@ -49,11 +48,9 @@ import {
 import { formatDue, formatWeekOfLabel, getWeekKey, isOverdue, isToday, nowIso, startOfDay } from "@/lib/date";
 import {
   completedByWeek,
-  getAgenda,
   getCourseHealth,
   getCourseProgress,
   getOverdueTasks,
-  getReminderMatches,
   getTodayTasks,
   getUpcomingTasks,
   getWorkloadThisWeek,
@@ -697,8 +694,6 @@ export function SchoolOS() {
     };
   }, [endedWorkBlockId, ready, state.workBlocks]);
 
-  const agenda = useMemo(() => getAgenda(state.tasks), [state.tasks]);
-  const reminders = useMemo(() => getReminderMatches(state.tasks, state.reminderSettings), [state.tasks, state.reminderSettings]);
   const weeklyWorkload = useMemo(() => getWorkloadThisWeek(state.tasks), [state.tasks]);
   const overdueCount = useMemo(() => getOverdueTasks(state.tasks).length, [state.tasks]);
   const upcomingCount = useMemo(() => getUpcomingTasks(state.tasks).length, [state.tasks]);
@@ -1234,20 +1229,9 @@ export function SchoolOS() {
                     <Command className="mr-1 h-4 w-4" />
                     Search
                   </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setComposerInitialCourseId(undefined);
-                      dispatch({ type: "set-composer", payload: true });
-                    }}
-                    data-onboarding="top-task-button"
-                  >
-                    <Plus className="mr-1 h-4 w-4" />
-                    Task
-                  </Button>
-                  <Button variant="outline" onClick={() => setIsUtilityOpen(true)}>
-                    <CalendarDays className="mr-1 h-4 w-4" />
-                    Agenda
+                  <Button variant="outline" onClick={() => setIsUtilityOpen(true)} data-onboarding="guide-button">
+                    <BookOpen className="mr-1 h-4 w-4" />
+                    Guide
                   </Button>
                 </div>
               </div>
@@ -1353,64 +1337,13 @@ export function SchoolOS() {
           <aside className="absolute inset-y-4 right-4 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-4 overflow-y-auto rounded-[32px] border border-slate-200/80 bg-[#f7f8fa]/96 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#0f1115]/96 dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]">
             <div className="flex items-center justify-between px-1">
               <div>
-                <h3 className="text-lg font-semibold tracking-tight">Agenda</h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400">Your upcoming week, tucked away until needed.</p>
+                <h3 className="text-lg font-semibold tracking-tight">Guide</h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400">Shortcuts and onboarding in one place.</p>
               </div>
               <Button variant="ghost" onClick={() => setIsUtilityOpen(false)} className="h-10 w-10 p-0">
                 <X className="h-4 w-4" />
               </Button>
             </div>
-
-            <Panel className="bg-white/92 dark:bg-[#101317]/92">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="font-semibold">Agenda (7 days)</h3>
-                <Badge>{agenda.length}</Badge>
-              </div>
-              <div className="space-y-2">
-                {agenda.slice(0, 8).map((task) => (
-                  <div key={task.id} className="rounded-2xl border border-slate-200/80 p-3 dark:border-white/10">
-                    <p className="line-clamp-1 text-sm font-medium">{task.title}</p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">{formatDue(task.dueAt)}</p>
-                  </div>
-                ))}
-                {agenda.length === 0 && <p className="text-sm text-slate-500">No due tasks in next week.</p>}
-              </div>
-            </Panel>
-
-            <Panel className="bg-white/92 dark:bg-[#101317]/92">
-              <div className="mb-2 flex items-center justify-between">
-                <h3 className="font-semibold">Reminders</h3>
-                <AlarmClock className="h-4 w-4 text-slate-500" />
-              </div>
-              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">Offsets (hours): {state.reminderSettings.offsetsHours.join(", ")}</p>
-              <div className="mb-3 flex flex-wrap gap-1">
-                {[168, 72, 48, 24, 12, 2].map((offset) => {
-                  const active = state.reminderSettings.offsetsHours.includes(offset);
-                  return (
-                    <button
-                      key={offset}
-                      onClick={() => {
-                        const list = active
-                          ? state.reminderSettings.offsetsHours.filter((o) => o !== offset)
-                          : [...state.reminderSettings.offsetsHours, offset];
-                        dispatch({ type: "set-alert-offsets", payload: list.length > 0 ? list : [24] });
-                      }}
-                      className={`rounded-full px-2.5 py-1 text-xs ${active ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900" : "bg-slate-100 text-slate-600 dark:bg-white/[0.05] dark:text-slate-300"}`}
-                    >
-                      {offset}h
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="space-y-2">
-                {reminders.slice(0, 5).map((task) => (
-                  <div key={task.id} className="rounded-2xl border border-slate-200/80 p-3 text-sm dark:border-white/10">
-                    {task.title}
-                  </div>
-                ))}
-                {reminders.length === 0 && <p className="text-sm text-slate-500">No active reminder windows.</p>}
-              </div>
-            </Panel>
 
             <Panel className="bg-white/92 dark:bg-[#101317]/92">
               <h3 className="mb-2 font-semibold">Keyboard</h3>
