@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { SchoolOS } from "@/components/school-os";
 import { AuthScreen } from "@/components/auth-screen";
 import { Button, Panel } from "@/components/ui";
