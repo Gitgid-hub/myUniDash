@@ -52,7 +52,20 @@ export function AuthScreen() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,#f7f8fa_0%,#f4f5f7_100%)] px-4 dark:bg-[linear-gradient(180deg,#090b0d_0%,#0d1014_100%)]">
-      <Panel className="w-full max-w-md bg-white/92 dark:bg-[#101317]/92">
+      <Panel className="relative w-full max-w-md overflow-hidden bg-white/92 dark:bg-[#101317]/92">
+        <div className="pointer-events-none absolute -top-20 left-1/2 h-44 w-44 -translate-x-1/2 rounded-full bg-violet-400/15 blur-3xl dark:bg-violet-400/20" />
+        <div className="pointer-events-none absolute -bottom-24 right-0 h-44 w-44 rounded-full bg-sky-300/20 blur-3xl dark:bg-sky-400/15" />
+        <div className="relative mb-4 flex items-end justify-center gap-2">
+          <div
+            className={`h-11 w-10 rounded-[42%_58%_53%_47%/45%_45%_55%_55%] bg-violet-500/85 transition-all duration-500 ${loading ? "animate-bounce" : "animate-pulse"}`}
+          />
+          <div
+            className={`h-8 w-8 rounded-[50%_50%_45%_55%/45%_55%_45%_55%] bg-amber-400/90 transition-all duration-500 ${loading ? "animate-bounce [animation-delay:120ms]" : "animate-pulse [animation-delay:120ms]"}`}
+          />
+          <div
+            className={`h-10 w-9 rounded-[48%_52%_62%_38%/49%_40%_60%_51%] bg-sky-400/90 transition-all duration-500 ${loading ? "animate-bounce [animation-delay:240ms]" : "animate-pulse [animation-delay:240ms]"}`}
+          />
+        </div>
         <h1 className="text-2xl font-semibold tracking-tight">Welcome to School OS</h1>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Sign in to sync your dashboard across devices.</p>
 
@@ -87,6 +100,11 @@ export function AuthScreen() {
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? "Please wait..." : mode === "sign-in" ? "Sign in" : "Create account"}
           </Button>
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200/70 dark:bg-white/10">
+            <div
+              className={`h-full rounded-full bg-gradient-to-r from-sky-400 via-violet-400 to-emerald-300 transition-all duration-500 ${loading ? "w-full opacity-100" : "w-1/3 opacity-70"}`}
+            />
+          </div>
         </form>
 
         <button

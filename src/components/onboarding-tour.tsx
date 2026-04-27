@@ -10,6 +10,7 @@ export function OnboardingTour({
   step,
   stepIndex,
   totalSteps,
+  onPrevious,
   onNext,
   onSkip,
   targetElement
@@ -18,6 +19,7 @@ export function OnboardingTour({
   step: OnboardingStep | null;
   stepIndex: number;
   totalSteps: number;
+  onPrevious: () => void;
   onNext: () => void;
   onSkip: () => void;
   targetElement: HTMLElement | null;
@@ -93,15 +95,48 @@ export function OnboardingTour({
 
   if (!active || !step) return null;
 
-  const needsClick = (step.action ?? "none") === "clickTarget";
-  const missingTarget = needsClick && !targetElement;
-
   return (
-    <div className="pointer-events-none fixed inset-0 z-[700]">
-      <div className="absolute inset-0 bg-black/55" />
+    <div className="pointer-events-auto fixed inset-0 z-[700]">
+      {rect ? (
+        <>
+          <div
+            className="pointer-events-auto absolute bg-black/55"
+            style={{ left: 0, top: 0, width: "100%", height: Math.max(0, rect.top - 8) }}
+          />
+          <div
+            className="pointer-events-auto absolute bg-black/55"
+            style={{
+              left: 0,
+              top: Math.max(0, rect.top - 8),
+              width: Math.max(0, rect.left - 8),
+              height: rect.height + 16
+            }}
+          />
+          <div
+            className="pointer-events-auto absolute bg-black/55"
+            style={{
+              left: rect.left + rect.width + 8,
+              top: Math.max(0, rect.top - 8),
+              width: Math.max(0, viewport.width - (rect.left + rect.width + 8)),
+              height: rect.height + 16
+            }}
+          />
+          <div
+            className="pointer-events-auto absolute bg-black/55"
+            style={{
+              left: 0,
+              top: rect.top + rect.height + 8,
+              width: "100%",
+              height: Math.max(0, viewport.height - (rect.top + rect.height + 8))
+            }}
+          />
+        </>
+      ) : (
+        <div className="pointer-events-auto absolute inset-0 bg-black/55" />
+      )}
       {rect ? (
         <div
-          className="pointer-events-none absolute rounded-2xl ring-2 ring-sky-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] transition-all duration-200"
+          className="pointer-events-none absolute animate-pulse rounded-2xl ring-2 ring-amber-300 shadow-[0_0_26px_rgba(252,211,77,0.9),0_0_60px_rgba(250,204,21,0.55)] transition-all duration-200"
           style={{
             left: rect.left - 6,
             top: rect.top - 6,
@@ -121,11 +156,9 @@ export function OnboardingTour({
         <h3 className="mt-1 text-base font-semibold">{step.title}</h3>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{step.body}</p>
 
-        {needsClick ? (
-          <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-            {missingTarget ? "Target is not visible yet. You can continue or skip this step." : "Click the highlighted element to continue."}
-          </p>
-        ) : null}
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+          Use the arrows to move between onboarding steps.
+        </p>
 
         <div className="mt-4 flex items-center justify-between gap-2">
           <button
@@ -136,15 +169,27 @@ export function OnboardingTour({
             Skip onboarding
           </button>
 
-          {!needsClick || missingTarget ? (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onPrevious}
+              disabled={stepIndex <= 0}
+              aria-label="Previous onboarding step"
+              title="Previous"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/15 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/10"
+            >
+              ←
+            </button>
             <button
               type="button"
               onClick={onNext}
-              className="rounded-full bg-slate-900 px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
+              aria-label={stepIndex >= totalSteps - 1 ? "Finish onboarding" : "Next onboarding step"}
+              title={stepIndex >= totalSteps - 1 ? "Finish" : "Next"}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-sm font-semibold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
             >
-              {stepIndex >= totalSteps - 1 ? "Finish" : "Next"}
+              {stepIndex >= totalSteps - 1 ? "✓" : "→"}
             </button>
-          ) : null}
+          </div>
         </div>
       </div>
     </div>

@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { SupabaseStateStore } from "@/lib/cloud-store";
 import { nowIso } from "@/lib/date";
+import { pushSchoolOsToast } from "@/lib/global-app-toasts";
 import { createId } from "@/lib/id";
 import { createSeedState } from "@/lib/seed";
 import { LocalStorageStore } from "@/lib/storage";
@@ -417,6 +418,10 @@ export function SchoolStoreProvider({ children, store }: { children: React.React
           return;
         }
         console.warn("School OS: could not load saved state; showing local seed. Reload to retry sync.");
+        pushSchoolOsToast({
+          kind: "error",
+          message: "Could not load your saved workspace. Showing a local fallback."
+        });
         dispatch({ type: "hydrate", payload: createSeedState() });
         // If cloud load failed, do not push this seed back up and overwrite remote data.
         persistAllowedRef.current = !(storage instanceof SupabaseStateStore);

@@ -11,31 +11,9 @@ import { SchoolStoreProvider } from "@/lib/store";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { Store } from "@/lib/types";
 
-const AUTH_SPLASH_MIN_MS = 1100;
-
 export function DashboardShell() {
   const { enabled, loading, user } = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
-  /**
-   * Wall-clock bypass: must NOT depend on `loading` (when loading flips false, an effect cleanup
-   * would cancel this timer and never reschedule — you can stay on "Connecting…" forever).
-   */
-  const [authWallExpired, setAuthWallExpired] = useState(false);
-  const [authSplashMinElapsed, setAuthSplashMinElapsed] = useState(false);
-
-  useEffect(() => {
-    const id = window.setTimeout(() => setAuthWallExpired(true), 4_000);
-    return () => window.clearTimeout(id);
-  }, []);
-
-  useEffect(() => {
-    if (!enabled) {
-      setAuthSplashMinElapsed(true);
-      return;
-    }
-    const id = window.setTimeout(() => setAuthSplashMinElapsed(true), AUTH_SPLASH_MIN_MS);
-    return () => window.clearTimeout(id);
-  }, [enabled]);
 
   const store = useMemo<Store>(() => {
     if (enabled && user) {
@@ -44,35 +22,10 @@ export function DashboardShell() {
     return new LocalStorageStore();
   }, [enabled, user]);
 
-  const blockOnAuth = (loading || !authSplashMinElapsed) && !authWallExpired;
-
-  if (blockOnAuth) {
+  if ((enabled && loading) || isSigningOut) {
     return (
-      <div
-        className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-center text-slate-100"
-        style={{
-          minHeight: "100vh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          backgroundColor: "#020617",
-          color: "#f1f5f9"
-        }}
-      >
-        <div>
-          <p className="text-lg font-medium tracking-wide text-slate-100">Connecting</p>
-          <div className="mt-2 flex items-center justify-center gap-1.5">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-300 [animation-delay:0ms]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-300 [animation-delay:120ms]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-300 [animation-delay:240ms]" />
-          </div>
-          <p
-            className="mt-3 max-w-md text-sm text-slate-400 transition-opacity duration-500"
-            style={{ color: "#94a3b8", marginTop: "12px", fontSize: "14px" }}
-          >
-            Brewing your dashboard... stronger than campus coffee.
-          </p>
-        </div>
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-sm text-slate-300">
+        Loading...
       </div>
     );
   }
@@ -87,8 +40,11 @@ export function DashboardShell() {
     const supabase = getSupabaseClient();
     if (!supabase) return;
     setIsSigningOut(true);
-    await supabase.auth.signOut();
-    setIsSigningOut(false);
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      setIsSigningOut(false);
+    }
   }
 
   return (

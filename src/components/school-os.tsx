@@ -79,6 +79,7 @@ import { createId } from "@/lib/id";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { CalendarHolidayChip } from "@/lib/calendar-holidays";
 import { indexHolidayChipsByDate, readCachedHolidayYear, writeCachedHolidayYear } from "@/lib/calendar-holidays";
+import { pushSchoolOsToast } from "@/lib/global-app-toasts";
 
 const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ className?: string }> }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -483,21 +484,78 @@ export function SchoolOS() {
     setOnboardingActive(true);
   }, []);
 
-  const finishOnboarding = useCallback(() => {
+  const finishOnboarding = useCallback((markComplete = true) => {
     setOnboardingActive(false);
     setOnboardingTargetElement(null);
-    dispatch({ type: "set-onboarding-complete", payload: nowIso() });
+    if (markComplete) {
+      dispatch({ type: "set-onboarding-complete", payload: nowIso() });
+    }
   }, [dispatch]);
 
   const advanceOnboarding = useCallback(() => {
     if (!onboardingActive) return;
+    const step = MINIMAL_CORE_ONBOARDING_STEPS[onboardingStepIndex];
+    const hasAtLeastOneActiveCourse = state.courses.some((course) => !course.archived);
+    if (step?.id === "courses" && !hasAtLeastOneActiveCourse) {
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Add at least one course to continue onboarding."
+      });
+      return;
+    }
     const lastIdx = MINIMAL_CORE_ONBOARDING_STEPS.length - 1;
     if (onboardingStepIndex >= lastIdx) {
-      finishOnboarding();
+      finishOnboarding(true);
       return;
     }
     setOnboardingStepIndex((n) => Math.min(lastIdx, n + 1));
-  }, [finishOnboarding, onboardingActive, onboardingStepIndex]);
+  }, [finishOnboarding, onboardingActive, onboardingStepIndex, state.courses]);
+
+  const retreatOnboarding = useCallback(() => {
+    if (!onboardingActive) return;
+    setOnboardingStepIndex((n) => Math.max(0, n - 1));
+  }, [onboardingActive]);
+
+  useEffect(() => {
+    if (!onboardingActive) return;
+
+    const onWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) {
+          return;
+        }
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        advanceOnboarding();
+        return;
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        retreatOnboarding();
+      }
+    };
+
+    window.addEventListener("keydown", onWindowKeyDown);
+    return () => window.removeEventListener("keydown", onWindowKeyDown);
+  }, [advanceOnboarding, onboardingActive, retreatOnboarding]);
+
+  const skipOnboarding = useCallback(() => {
+    const hasAtLeastOneActiveCourse = state.courses.some((course) => !course.archived);
+    if (!hasAtLeastOneActiveCourse) {
+      const coursesStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "courses");
+      setOnboardingStepIndex(coursesStepIndex >= 0 ? coursesStepIndex : 0);
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Add your first course before finishing onboarding."
+      });
+      return;
+    }
+    finishOnboarding(true);
+  }, [finishOnboarding, state.courses]);
 
   useEffect(() => {
     if (!selectedCourse) {
@@ -530,6 +588,11 @@ export function SchoolOS() {
   }, [dispatch, onboardingActive, onboardingStep, state.ui.activeView]);
 
   useEffect(() => {
+    if (!onboardingActive || onboardingStep?.id !== "class-notes" || !state.ui.showTaskComposer) return;
+    dispatch({ type: "set-composer", payload: false });
+  }, [dispatch, onboardingActive, onboardingStep?.id, state.ui.showTaskComposer]);
+
+  useEffect(() => {
     if (!onboardingActive) {
       setOnboardingTargetElement(null);
       return;
@@ -539,22 +602,6 @@ export function SchoolOS() {
     const id = window.setInterval(refresh, 250);
     return () => window.clearInterval(id);
   }, [onboardingActive, onboardingStepIndex, resolveOnboardingTarget, state.ui.activeView, isUtilityOpen]);
-
-  useEffect(() => {
-    if (!onboardingActive || !onboardingStep || (onboardingStep.action ?? "none") !== "clickTarget") return;
-    const target = onboardingTargetElement;
-    if (!target) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const node = event.target;
-      if (!(node instanceof Node)) return;
-      if (!target.contains(node)) return;
-      window.setTimeout(() => {
-        advanceOnboarding();
-      }, 120);
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [advanceOnboarding, onboardingActive, onboardingStep, onboardingTargetElement]);
 
   useEffect(() => {
     setVisibleCourseIds((current) => {
@@ -1396,8 +1443,9 @@ export function SchoolOS() {
         step={onboardingStep}
         stepIndex={onboardingStepIndex}
         totalSteps={MINIMAL_CORE_ONBOARDING_STEPS.length}
+        onPrevious={retreatOnboarding}
         onNext={advanceOnboarding}
-        onSkip={finishOnboarding}
+        onSkip={skipOnboarding}
         targetElement={onboardingTargetElement}
       />
 

@@ -24,7 +24,9 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     body: "Use this Add button to create your course list manually.",
     targetSelector: "[data-onboarding='courses-add-button']",
     action: "clickTarget",
-    placement: "right"
+    placement: "right",
+    ensureView: "dashboard",
+    ensureUtilityOpen: false
   },
   {
     id: "calendar",
@@ -32,7 +34,8 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     body: "Go to Calendar to see sessions and plan your week.",
     targetSelector: "[data-onboarding='nav-calendar']",
     action: "clickTarget",
-    placement: "right"
+    placement: "right",
+    ensureView: "calendar"
   },
   {
     id: "calendar-day",
@@ -44,21 +47,22 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     ensureView: "calendar"
   },
   {
-    id: "task",
-    title: "Create a task",
-    body: "Use Task to quickly add an assignment and keep your plan current.",
-    targetSelector: "[data-onboarding='top-task-button']",
-    action: "clickTarget",
-    placement: "bottom",
-    ensureView: "dashboard"
-  },
-  {
     id: "class-notes",
     title: "Class notes",
     body: "Class Notes is where you write summaries and generate study cards.",
     targetSelector: "[data-onboarding='nav-class-notes']",
     action: "clickTarget",
-    placement: "right"
+    placement: "right",
+    ensureView: "class-notes"
+  },
+  {
+    id: "kanban",
+    title: "Kanban board",
+    body: "Kanban gives you a board view of tasks by stage, so you can move work from planned to done with clear focus.",
+    targetSelector: "[data-onboarding='nav-kanban']",
+    action: "clickTarget",
+    placement: "right",
+    ensureView: "kanban"
   },
   {
     id: "done",

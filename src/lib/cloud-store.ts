@@ -1,9 +1,23 @@
 "use client";
 
 import { createSeedState } from "@/lib/seed";
+import { pushSchoolOsToast } from "@/lib/global-app-toasts";
 import { LocalStorageStore } from "@/lib/storage";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { SchoolState, Store } from "@/lib/types";
+
+const CLOUD_ERROR_TOAST_COOLDOWN_MS = 20_000;
+let lastCloudErrorToastAt = 0;
+
+function maybeShowCloudError(message: string): void {
+  if (typeof window === "undefined") return;
+  const now = Date.now();
+  if (now - lastCloudErrorToastAt < CLOUD_ERROR_TOAST_COOLDOWN_MS) {
+    return;
+  }
+  lastCloudErrorToastAt = now;
+  pushSchoolOsToast({ kind: "error", message });
+}
 
 export class SupabaseStateStore implements Store {
   constructor(private readonly userId: string) {}
@@ -22,6 +36,7 @@ export class SupabaseStateStore implements Store {
 
     if (error) {
       console.error("Failed loading cloud state:", error.message);
+      maybeShowCloudError("Cloud sync failed. Showing local data for now.");
       return createSeedState();
     }
 
@@ -45,6 +60,15 @@ export class SupabaseStateStore implements Store {
       return;
     }
 
+    // During auth transitions (sign-out/sign-in), stale autosaves can race after
+    // the session is gone or switched users, which triggers RLS errors.
+    const {
+      data: { session }
+    } = await supabase.auth.getSession();
+    if (!session?.user || session.user.id !== this.userId) {
+      return;
+    }
+
     const { error } = await supabase
       .from("user_states")
       .upsert(
@@ -58,6 +82,7 @@ export class SupabaseStateStore implements Store {
 
     if (error) {
       console.error("Failed saving cloud state:", error.message);
+      maybeShowCloudError("Couldn't save to cloud. We'll keep trying in background.");
     }
   }
 }
