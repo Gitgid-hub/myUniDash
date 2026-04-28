@@ -389,22 +389,9 @@ function reducer(state: SchoolState, action: Action): SchoolState {
       const note = notes.find((n) => n.id === action.payload);
       if (!note) return state;
       const now = nowIso();
-      const othersToRemove = new Set(
-        notes
-          .filter(
-            (n) =>
-              n.id !== note.id &&
-              n.courseId === note.courseId &&
-              n.occurredOn === note.occurredOn &&
-              n.status === "saved"
-          )
-          .map((n) => n.id)
-      );
       return {
         ...state,
-        classNotes: notes
-          .filter((n) => !othersToRemove.has(n.id))
-          .map((n) => (n.id === note.id ? { ...n, status: "saved" as const, updatedAt: now } : n))
+        classNotes: notes.map((n) => (n.id === note.id ? { ...n, status: "saved" as const, updatedAt: now } : n))
       };
     }
     default:

@@ -36,6 +36,8 @@ function msToHm(ms: number): string | null {
 
 function mapHujiDay(day: number | null | undefined): Weekday | null {
   switch (day) {
+    case 0:
+      return "Sun";
     case 1:
       return "Mon";
     case 2:
@@ -53,6 +55,14 @@ function mapHujiDay(day: number | null | undefined): Weekday | null {
     default:
       return null;
   }
+}
+
+function getMeetingTypePriority(label: string | null | undefined): number {
+  const text = (label ?? "").toLowerCase();
+  if (text.includes("הרצ") || text.includes("lecture") || text.includes("שיעור")) return 0;
+  if (text.includes("תרג") || text.includes("tutorial") || text.includes("tirgul")) return 1;
+  if (text.includes("מעב") || text.includes("lab")) return 2;
+  return 3;
 }
 
 async function fetchHujiApi(path: string): Promise<unknown> {
@@ -216,16 +226,41 @@ async function fetchHujiMeetingsByCourseCode(courseCode: string, year: number): 
       }
       continue;
     }
-    choiceSets.push({
-      setId: setKey,
-      label: setGroups[0]?.setLabel ?? "Session options",
-      options: setGroups.map((group) => ({
+    const seenOptionSignatures = new Set<string>();
+    const dedupedOptions = setGroups
+      .map((group) => ({
         optionId: group.optionId,
         label: group.optionLabel,
         meetings: group.meetings
       }))
+      .filter((option) => option.meetings.length > 0)
+      .filter((option) => {
+        const signature = option.meetings
+          .map((meeting) => `${meeting.weekday}-${meeting.start_time}-${meeting.end_time}-${meeting.meeting_type ?? ""}`)
+          .sort()
+          .join("|");
+        if (!signature) return false;
+        if (seenOptionSignatures.has(signature)) return false;
+        seenOptionSignatures.add(signature);
+        return true;
+      });
+    if (dedupedOptions.length <= 1) {
+      const only = dedupedOptions[0];
+      for (const meeting of only?.meetings ?? []) {
+        const key = `${meeting.weekday}-${meeting.start_time}-${meeting.end_time}-${meeting.meeting_type ?? ""}-${meeting.location ?? ""}-${meeting.semester ?? ""}`;
+        if (fixedSeen.has(key)) continue;
+        fixedSeen.add(key);
+        fixedMeetings.push(meeting);
+      }
+      continue;
+    }
+    choiceSets.push({
+      setId: setKey,
+      label: setGroups[0]?.setLabel ?? "Session options",
+      options: dedupedOptions
     });
   }
+  choiceSets.sort((a, b) => getMeetingTypePriority(a.label) - getMeetingTypePriority(b.label));
   return { fixedMeetings, choiceSets };
 }
 

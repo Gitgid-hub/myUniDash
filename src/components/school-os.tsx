@@ -82,6 +82,7 @@ const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ class
   { id: "class-notes", label: "Class Notes", icon: StickyNote },
   { id: "kanban", label: "Kanban", icon: KanbanSquare },
   { id: "courses", label: "Courses", icon: BookOpen },
+  { id: "user-requests", label: "User Requests", icon: TriangleAlert },
   { id: "upcoming", label: "Upcoming", icon: CalendarDays },
   { id: "by-course", label: "By Course", icon: BookOpen },
   { id: "by-priority", label: "By Priority", icon: BarChart3 }
@@ -91,6 +92,8 @@ const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ class
 const POST_SESSION_PROMPT_STORAGE_KEY = "school-os-post-session-prompt-dismissed:v1";
 const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gmail.com"]);
 const MAX_FEATURE_REQUEST_SCREENSHOTS = 3;
+const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
+const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
 type CatalogDegreeOption = {
   id: string;
   roadmapCode: string;
@@ -191,6 +194,51 @@ const coursePalette = [
   "#64748b"
 ];
 
+function hexToRgb(hexColor: string): { r: number; g: number; b: number } | null {
+  const hex = hexColor.replace("#", "").trim();
+  const normalized = hex.length === 3 ? hex.split("").map((c) => `${c}${c}`).join("") : hex;
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
+  const value = Number.parseInt(normalized, 16);
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255
+  };
+}
+
+function colorDistance(a: string, b: string): number {
+  const rgbA = hexToRgb(a);
+  const rgbB = hexToRgb(b);
+  if (!rgbA || !rgbB) return 0;
+  const dr = rgbA.r - rgbB.r;
+  const dg = rgbA.g - rgbB.g;
+  const db = rgbA.b - rgbB.b;
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function pickDistinctCourseColor(existingColors: string[]): string {
+  const normalizedExisting = existingColors
+    .map((color) => color.toLowerCase())
+    .filter((color) => color.trim().length > 0);
+
+  const paletteUnique = [...new Set(coursePalette.map((color) => color.toLowerCase()))];
+  if (normalizedExisting.length === 0) return paletteUnique[0] ?? coursePalette[0];
+
+  let bestColor = paletteUnique[0] ?? coursePalette[0];
+  let bestScore = -1;
+  for (const candidate of paletteUnique) {
+    const nearestDistance = normalizedExisting.reduce((nearest, existing) => {
+      const distance = colorDistance(candidate, existing);
+      return Math.min(nearest, distance);
+    }, Number.POSITIVE_INFINITY);
+    if (nearestDistance > bestScore) {
+      bestScore = nearestDistance;
+      bestColor = candidate;
+    }
+  }
+  return bestColor;
+}
+
 const weekDays: WeekDay[] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 type SessionCadence = "none" | "daily" | "weekly" | "monthly";
 type QuickSessionType = "lecture" | "tutorial";
@@ -201,6 +249,8 @@ function viewTitle(view: MainView): string {
       return "Overview";
     case "courses":
       return "Courses";
+    case "user-requests":
+      return "User Requests";
     case "today":
       return "Today";
     case "upcoming":
@@ -360,6 +410,14 @@ interface ImportedMeetingChoiceSet {
   options: ImportedMeetingChoiceOption[];
 }
 
+function getImportedChoiceSetPriority(label: string): number {
+  const text = label.toLowerCase();
+  if (text.includes("הרצ") || text.includes("lecture") || text.includes("שיעור")) return 0;
+  if (text.includes("תרג") || text.includes("tutorial") || text.includes("tirgul")) return 1;
+  if (text.includes("מעב") || text.includes("lab")) return 2;
+  return 3;
+}
+
 const MemoDashboardView = memo(DashboardView);
 const MemoKanbanView = memo(KanbanView);
 const MemoCalendarView = memo(CalendarView);
@@ -410,6 +468,15 @@ export function SchoolOS() {
   const [adminFeatureRequests, setAdminFeatureRequests] = useState<FeatureRequestItem[]>([]);
   const [adminRequestsLoading, setAdminRequestsLoading] = useState(false);
   const [adminRequestsError, setAdminRequestsError] = useState<string | null>(null);
+  const [deletingRequestId, setDeletingRequestId] = useState<number | null>(null);
+  const [selectedRequestScreenshot, setSelectedRequestScreenshot] = useState<{ dataUrl: string; alt: string } | null>(null);
+  const [doneFeatureRequestMap, setDoneFeatureRequestMap] = useState<Record<string, string>>({});
+  const [gitSyncStatus, setGitSyncStatus] = useState<{ available: boolean; clean: boolean; ahead: number; checking: boolean }>({
+    available: false,
+    clean: false,
+    ahead: 0,
+    checking: false
+  });
   const [isAddCourseOpen, setIsAddCourseOpen] = useState(false);
   const [isCatalogPickerOpen, setIsCatalogPickerOpen] = useState(false);
   const [isCourseActionsOpen, setIsCourseActionsOpen] = useState(false);
@@ -483,6 +550,44 @@ export function SchoolOS() {
     }>;
     activeSetIndex: number;
   } | null>(null);
+
+  const readDegreeRoadmapCache = useCallback((degreeId: string): CatalogSearchCourse[] | null => {
+    if (typeof window === "undefined") return null;
+    if (!user?.id) return null;
+    try {
+      const raw = window.localStorage.getItem(DEGREE_ROADMAP_CACHE_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Record<string, Record<string, { courses?: CatalogSearchCourse[] }>>;
+      const userBucket = parsed?.[user.id];
+      const entry = userBucket?.[degreeId];
+      if (!entry?.courses || !Array.isArray(entry.courses) || entry.courses.length === 0) return null;
+      return entry.courses;
+    } catch {
+      return null;
+    }
+  }, [user?.id]);
+
+  const writeDegreeRoadmapCache = useCallback((degreeId: string, courses: CatalogSearchCourse[]) => {
+    if (typeof window === "undefined") return;
+    if (!user?.id) return;
+    try {
+      const raw = window.localStorage.getItem(DEGREE_ROADMAP_CACHE_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) as Record<string, Record<string, { courses: CatalogSearchCourse[]; savedAt: string }>> : {};
+      const next = {
+        ...parsed,
+        [user.id]: {
+          ...(parsed[user.id] ?? {}),
+          [degreeId]: {
+            courses,
+            savedAt: new Date().toISOString()
+          }
+        }
+      };
+      window.localStorage.setItem(DEGREE_ROADMAP_CACHE_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Best effort cache only.
+    }
+  }, [user?.id]);
 
   const pushCalendarUndoEntry = useCallback((entry: CalendarUndoEntry) => {
     calendarUndoStackRef.current.push(entry);
@@ -605,6 +710,8 @@ export function SchoolOS() {
     return activeCourses;
   }, [activeCourses, archivedCourses, courseListMode]);
   const onboardingStep = onboardingActive ? MINIMAL_CORE_ONBOARDING_STEPS[onboardingStepIndex] ?? null : null;
+  const onboardingCourseGlowId =
+    onboardingActive && onboardingStep?.id === "calendar-hours" ? freshlyAddedCourseId : null;
   const selectedCourse =
     state.ui.selectedCourseId === "all"
       ? undefined
@@ -639,7 +746,6 @@ export function SchoolOS() {
   const advanceOnboarding = useCallback(() => {
     if (!onboardingActive) return;
     const step = MINIMAL_CORE_ONBOARDING_STEPS[onboardingStepIndex];
-    const hasAtLeastOneActiveCourse = state.courses.some((course) => !course.archived);
     const hasAddedCourseDuringOnboarding = state.courses.filter((course) => !course.archived).length > onboardingActiveCourseCountAtStart;
     const hasAtLeastOneScheduledMeeting = state.courses.some((course) => !course.archived && course.meetings.length > 0);
     if (step?.id === "add-course" && !hasAddedCourseDuringOnboarding) {
@@ -702,6 +808,10 @@ export function SchoolOS() {
     if (!email) return false;
     return ADMIN_EMAILS.has(email);
   }, [user?.email]);
+  const visibleNavItems = useMemo(
+    () => navItems.filter((item) => (item.id === "user-requests" ? isAdmin : true)),
+    [isAdmin]
+  );
 
   const loadAdminFeatureRequests = useCallback(async () => {
     if (!isAdmin) return;
@@ -719,6 +829,41 @@ export function SchoolOS() {
       setAdminRequestsError(error instanceof Error ? error.message : "Failed to load feature requests.");
     } finally {
       setAdminRequestsLoading(false);
+    }
+  }, [getAuthHeader, isAdmin]);
+
+  const deleteAdminFeatureRequest = useCallback(async (requestId: number) => {
+    if (!isAdmin) return;
+    const confirmed = window.confirm("Delete this user request permanently?");
+    if (!confirmed) return;
+    setDeletingRequestId(requestId);
+    setAdminRequestsError(null);
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        ...(await getAuthHeader())
+      };
+      const res = await fetch("/api/feature-requests", {
+        method: "DELETE",
+        headers,
+        body: JSON.stringify({ id: requestId })
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to delete request.");
+      }
+      setAdminFeatureRequests((prev) => prev.filter((item) => item.id !== requestId));
+      setDoneFeatureRequestMap((prev) => {
+        const key = String(requestId);
+        if (!prev[key]) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    } catch (error) {
+      setAdminRequestsError(error instanceof Error ? error.message : "Failed to delete request.");
+    } finally {
+      setDeletingRequestId(null);
     }
   }, [getAuthHeader, isAdmin]);
 
@@ -793,6 +938,71 @@ export function SchoolOS() {
     if (!isSettingsOpen || !isAdmin) return;
     void loadAdminFeatureRequests();
   }, [isAdmin, isSettingsOpen, loadAdminFeatureRequests]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(FEATURE_REQUEST_DONE_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object") return;
+      const next: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof value === "string") next[key] = value;
+      }
+      setDoneFeatureRequestMap(next);
+    } catch {
+      setDoneFeatureRequestMap({});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(FEATURE_REQUEST_DONE_STORAGE_KEY, JSON.stringify(doneFeatureRequestMap));
+  }, [doneFeatureRequestMap]);
+
+  useEffect(() => {
+    if (!isAdmin && state.ui.activeView === "user-requests") {
+      dispatch({ type: "set-view", payload: "dashboard" });
+    }
+  }, [dispatch, isAdmin, state.ui.activeView]);
+
+  useEffect(() => {
+    if (!isAdmin || state.ui.activeView !== "user-requests") return;
+    void loadAdminFeatureRequests();
+  }, [isAdmin, loadAdminFeatureRequests, state.ui.activeView]);
+
+  useEffect(() => {
+    if (!isAdmin || state.ui.activeView !== "user-requests") return;
+    let cancelled = false;
+    const checkGitSync = async () => {
+      setGitSyncStatus((prev) => ({ ...prev, checking: true }));
+      try {
+        const headers = await getAuthHeader();
+        const res = await fetch("/api/dev/git-sync-status", { headers, cache: "no-store" });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error ?? "Failed to read git sync status.");
+        if (cancelled) return;
+        setGitSyncStatus({
+          available: Boolean(payload.available),
+          clean: Boolean(payload.clean),
+          ahead: typeof payload.ahead === "number" ? payload.ahead : 0,
+          checking: false
+        });
+      } catch {
+        if (cancelled) return;
+        setGitSyncStatus({ available: false, clean: false, ahead: 0, checking: false });
+      }
+    };
+    void checkGitSync();
+    const id = window.setInterval(() => {
+      void checkGitSync();
+    }, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [getAuthHeader, isAdmin, state.ui.activeView]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1611,7 +1821,7 @@ export function SchoolOS() {
       const dedupedImportedTitle = dedupeLabelSegments(normalizedImportedTitle);
 
       const newCourseId = createId("course");
-      const selectedColor = coursePalette[Math.floor(Math.random() * coursePalette.length)];
+      const selectedColor = pickDistinctCourseColor(state.courses.map((item) => item.color));
       addCourse({
         id: newCourseId,
         name: dedupedImportedTitle,
@@ -1648,7 +1858,8 @@ export function SchoolOS() {
                 }))
             }))
           }))
-          .filter((set) => set.options.some((option) => option.meetings.length > 0));
+          .filter((set) => set.options.some((option) => option.meetings.length > 0))
+          .sort((a, b) => getImportedChoiceSetPriority(a.label) - getImportedChoiceSetPriority(b.label));
         if (mappedChoiceSets.length > 0) {
           setPendingSessionChoiceFlow({
           courseId: newCourseId,
@@ -1677,6 +1888,16 @@ export function SchoolOS() {
     degreeLoadRequestSeqRef.current = requestSeq;
     setCatalogDegreeImporting(true);
     setCatalogError(null);
+    const cachedCourses = !showToast ? readDegreeRoadmapCache(degreeId) : null;
+    if (cachedCourses && degreeLoadRequestSeqRef.current === requestSeq) {
+      setCatalogViewMode("roadmap");
+      setCatalogResults(cachedCourses);
+      setCatalogQuery("");
+      setIsCatalogPickerOpen(true);
+      setIsCourseActionsOpen(false);
+      setCatalogDegreeImporting(false);
+      return true;
+    }
     setCatalogResults([]);
     try {
       const headers = {
@@ -1700,6 +1921,7 @@ export function SchoolOS() {
       }
       const courses = (payload.courses ?? []) as Array<CatalogSearchCourse & { updatedAt?: string }>;
       const roadmapCode = typeof payload.roadmapCode === "string" ? payload.roadmapCode : null;
+      writeDegreeRoadmapCache(degreeId, courses);
       setCatalogViewMode("roadmap");
       setCatalogResults(courses);
       setCatalogQuery("");
@@ -1725,7 +1947,7 @@ export function SchoolOS() {
         setCatalogDegreeImporting(false);
       }
     }
-  }, [catalogDegreeOptions, getAuthHeader]);
+  }, [catalogDegreeOptions, getAuthHeader, readDegreeRoadmapCache, writeDegreeRoadmapCache]);
 
   const importFullDegreePlan = useCallback(async () => {
     const loaded = await loadDegreeRoadmapCourses(catalogDegree, true);
@@ -1858,7 +2080,7 @@ export function SchoolOS() {
               </Button>
             </div>
             <div className="mt-5 space-y-1">
-              {navItems.map((item) => {
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
                 const active = state.ui.activeView === item.id;
                 return (
@@ -1889,7 +2111,7 @@ export function SchoolOS() {
 
         <main
           className={
-            state.ui.activeView === "kanban" || state.ui.activeView === "calendar"
+            state.ui.activeView === "kanban" || state.ui.activeView === "calendar" || state.ui.activeView === "class-notes"
               ? "animate-fadeSlide flex h-full min-h-0 flex-col gap-5 overflow-hidden"
               : "animate-fadeSlide space-y-5"
           }
@@ -2024,7 +2246,7 @@ export function SchoolOS() {
               tentativeOptions={tentativeCalendarOptions}
               tentativeChoiceTitle={activeChoiceSet?.label}
               onPickTentativeOption={selectTentativeCalendarOption}
-              newlyAddedCourseId={freshlyAddedCourseId}
+              newlyAddedCourseId={onboardingCourseGlowId}
             />
           )}
           {state.ui.activeView === "courses" && (
@@ -2161,19 +2383,120 @@ export function SchoolOS() {
               </div>
             </Panel>
           )}
+          {state.ui.activeView === "user-requests" && isAdmin && (
+            <Panel className="bg-white/90 dark:bg-[#101317]/90">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h3 className="text-base font-semibold tracking-tight">User feature requests</h3>
+                <Button variant="outline" className="h-8 px-3 text-xs" onClick={() => void loadAdminFeatureRequests()} disabled={adminRequestsLoading}>
+                  {adminRequestsLoading ? "Refreshing..." : "Refresh"}
+                </Button>
+              </div>
+              <div className="mb-3 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 text-xs text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
+                {gitSyncStatus.available
+                  ? (gitSyncStatus.clean && gitSyncStatus.ahead === 0
+                      ? "Git sync status: committed and pushed. Done requests are auto-hidden."
+                      : `Git sync status: waiting for commit/push (clean: ${gitSyncStatus.clean ? "yes" : "no"}, ahead: ${gitSyncStatus.ahead}).`)
+                  : (gitSyncStatus.checking ? "Checking git sync status..." : "Git sync status unavailable in this environment.")}
+              </div>
+              {adminRequestsError && (
+                <div className="mb-3 rounded-xl border border-rose-200/70 bg-rose-50/80 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
+                  {adminRequestsError}
+                </div>
+              )}
+              <div className="max-h-[74vh] space-y-3 overflow-auto pr-1">
+                {(() => {
+                  const gitSynced = gitSyncStatus.available && gitSyncStatus.clean && gitSyncStatus.ahead === 0;
+                  const visibleRequests = adminFeatureRequests.filter((request) => !(doneFeatureRequestMap[String(request.id)] && gitSynced));
+                  if (adminRequestsLoading && adminFeatureRequests.length === 0) {
+                    return <p className="text-sm text-slate-500 dark:text-slate-400">Loading requests...</p>;
+                  }
+                  if (visibleRequests.length === 0) {
+                    return <p className="text-sm text-slate-500 dark:text-slate-400">No user requests pending.</p>;
+                  }
+                  return visibleRequests.map((request) => {
+                    const requestKey = String(request.id);
+                    const isDone = Boolean(doneFeatureRequestMap[requestKey]);
+                    return (
+                    <article key={request.id} className="rounded-2xl border border-slate-200/80 p-3.5 dark:border-white/10">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          {request.user_email} · {new Date(request.created_at).toLocaleString()}
+                        </p>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setDoneFeatureRequestMap((prev) => {
+                              const next = { ...prev };
+                              if (next[requestKey]) {
+                                delete next[requestKey];
+                              } else {
+                                next[requestKey] = new Date().toISOString();
+                              }
+                              return next;
+                            })}
+                            className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+                              isDone
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200 dark:hover:bg-emerald-500/20"
+                                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100 dark:border-white/20 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                            }`}
+                          >
+                            {isDone ? "Done" : "Mark done"}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="Delete request"
+                            onClick={() => void deleteAdminFeatureRequest(request.id)}
+                            disabled={deletingRequestId === request.id}
+                            className="rounded-md p-1.5 text-rose-500 transition hover:bg-rose-100/70 disabled:cursor-not-allowed disabled:opacity-60 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                          >
+                            <Trash2 className={`h-3.5 w-3.5 ${deletingRequestId === request.id ? "animate-pulse" : ""}`} />
+                          </button>
+                        </div>
+                      </div>
+                      {isDone ? (
+                        <p className="mt-1 text-[11px] text-emerald-700 dark:text-emerald-300">
+                          Waiting for git commit + push before auto-hiding.
+                        </p>
+                      ) : null}
+                      <p dir="auto" className="mt-2 whitespace-pre-wrap text-base leading-relaxed text-slate-800 dark:text-slate-100">
+                        {request.message}
+                      </p>
+                      {request.screenshots?.length > 0 && (
+                        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                          {request.screenshots.map((shot, idx) => (
+                            <button
+                              key={`${request.id}-${idx}`}
+                              type="button"
+                              onClick={() => setSelectedRequestScreenshot({ dataUrl: shot.dataUrl, alt: shot.name || `screenshot ${idx + 1}` })}
+                              className="overflow-hidden rounded-xl border border-slate-200/80 text-left transition hover:ring-2 hover:ring-slate-300 dark:border-white/10 dark:hover:ring-white/30"
+                            >
+                              <img src={shot.dataUrl} alt={shot.name || "feature request screenshot"} className="h-28 w-full object-cover" />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                    );
+                  });
+                })()}
+              </div>
+            </Panel>
+          )}
           {state.ui.activeView === "by-course" && <MemoByCourseView tasks={filteredTasks} courses={activeCourses} onToggleDone={toggleTaskDoneWithUndo} onFocus={handleFocusTask} />}
           {state.ui.activeView === "by-priority" && <MemoByPriorityView tasks={filteredTasks} onToggleDone={toggleTaskDoneWithUndo} onFocus={handleFocusTask} />}
           {state.ui.activeView === "class-notes" && (
-            <MemoClassNotesPanel
-              courses={state.courses}
-              classNotes={state.classNotes ?? []}
-              openNoteId={classNoteEditorId}
-              onOpenNote={setClassNoteEditorId}
-              onCreateNote={(input) => dispatch({ type: "add-class-note", payload: input })}
-              onUpdateNote={(payload) => dispatch({ type: "update-class-note", payload })}
-              onDeleteNote={(id) => dispatch({ type: "delete-class-note", payload: id })}
-              onPublishNote={(id) => dispatch({ type: "publish-class-note", payload: id })}
-            />
+            <div className="min-h-0 flex-1 overflow-auto pr-1">
+              <MemoClassNotesPanel
+                courses={state.courses}
+                classNotes={state.classNotes ?? []}
+                openNoteId={classNoteEditorId}
+                onOpenNote={setClassNoteEditorId}
+                onCreateNote={(input) => dispatch({ type: "add-class-note", payload: input })}
+                onUpdateNote={(payload) => dispatch({ type: "update-class-note", payload })}
+                onDeleteNote={(id) => dispatch({ type: "delete-class-note", payload: id })}
+                onPublishNote={(id) => dispatch({ type: "publish-class-note", payload: id })}
+              />
+            </div>
           )}
           {state.ui.activeView === "upcoming" && (
             <MemoTaskList
@@ -2436,6 +2759,18 @@ export function SchoolOS() {
               </Button>
             </div>
           </Panel>
+        </div>
+      )}
+
+      {selectedRequestScreenshot && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 px-4">
+          <button type="button" className="absolute inset-0" onClick={() => setSelectedRequestScreenshot(null)} aria-label="Close screenshot preview" />
+          <div className="relative z-[81] max-h-[92vh] max-w-[92vw] overflow-hidden rounded-2xl border border-white/15 bg-black/40 p-2">
+            <img src={selectedRequestScreenshot.dataUrl} alt={selectedRequestScreenshot.alt} className="max-h-[88vh] max-w-[88vw] rounded-xl object-contain" />
+            <Button variant="outline" className="absolute right-3 top-3 h-8 px-2 text-xs" onClick={() => setSelectedRequestScreenshot(null)}>
+              Close
+            </Button>
+          </div>
         </div>
       )}
 
@@ -3670,6 +4005,8 @@ function CalendarView({
     detailsOpen: boolean;
   } | null>(null);
   const [quickCreateAnchor, setQuickCreateAnchor] = useState<{ left: number; top: number } | null>(null);
+  const QUICK_CREATE_POPOVER_WIDTH = 300;
+  const QUICK_CREATE_POPOVER_ESTIMATED_HEIGHT = 320;
   const tentativeBlockRef = useRef<HTMLDivElement | null>(null);
   const quickDraftBlockRef = useRef<HTMLDivElement | null>(null);
   const weekGridBodyRef = useRef<HTMLDivElement | null>(null);
@@ -3912,11 +4249,11 @@ function CalendarView({
       detailsOpen: false
     });
     const topPx = ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * (mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight);
-    const popoverWidth = 300;
-    const popoverHeight = 160;
+    const popoverWidth = QUICK_CREATE_POPOVER_WIDTH;
+    const popoverHeight = QUICK_CREATE_POPOVER_ESTIMATED_HEIGHT;
     const blockRect = tentativeBlockRef.current?.getBoundingClientRect() ?? null;
     const clampLeft = (value: number) => Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, value));
-    const clampTop = (value: number) => Math.max(96, Math.min(window.innerHeight - popoverHeight - 12, value));
+    const clampTop = (value: number) => Math.max(12, Math.min(window.innerHeight - popoverHeight - 12, value));
     if (blockRect) {
       const preferredLeft = blockRect.right + 2;
       const fallbackLeft = blockRect.left - popoverWidth - 2;
@@ -3979,11 +4316,11 @@ function CalendarView({
       repeatDays: recurrence?.daysOfWeek?.length ? recurrence.daysOfWeek : [meeting.day],
       detailsOpen: false
     });
-    const popoverWidth = 300;
-    const popoverHeight = 160;
+    const popoverWidth = QUICK_CREATE_POPOVER_WIDTH;
+    const popoverHeight = QUICK_CREATE_POPOVER_ESTIMATED_HEIGHT;
     const topPx = ((startMinutes - timelineHours[0] * 60) / 60) * (mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight);
     const clampLeft = (value: number) => Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, value));
-    const clampTop = (value: number) => Math.max(96, Math.min(window.innerHeight - popoverHeight - 12, value));
+    const clampTop = (value: number) => Math.max(12, Math.min(window.innerHeight - popoverHeight - 12, value));
     if (anchorRect) {
       const preferredLeft = anchorRect.right + 2;
       const fallbackLeft = anchorRect.left - popoverWidth - 2;
@@ -4030,6 +4367,33 @@ function CalendarView({
       setQuickCreateAnchor({ left: window.innerWidth - 360, top: 140 });
     }
   }
+
+  const clampQuickCreatePopoverToViewport = useCallback(() => {
+    if (!quickCreateDraft || !quickCreateAnchor) return;
+    const popover = document.getElementById("quick-create-popover");
+    if (!popover) return;
+    const rect = popover.getBoundingClientRect();
+    const nextLeft = Math.max(12, Math.min(window.innerWidth - rect.width - 12, quickCreateAnchor.left));
+    const nextTop = Math.max(12, Math.min(window.innerHeight - rect.height - 12, quickCreateAnchor.top));
+    if (Math.abs(nextLeft - quickCreateAnchor.left) > 1 || Math.abs(nextTop - quickCreateAnchor.top) > 1) {
+      setQuickCreateAnchor({ left: nextLeft, top: nextTop });
+    }
+  }, [quickCreateAnchor, quickCreateDraft]);
+
+  useLayoutEffect(() => {
+    clampQuickCreatePopoverToViewport();
+  }, [clampQuickCreatePopoverToViewport]);
+
+  useEffect(() => {
+    if (!quickCreateDraft || !quickCreateAnchor) return;
+    const popover = document.getElementById("quick-create-popover");
+    if (!popover || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      clampQuickCreatePopoverToViewport();
+    });
+    observer.observe(popover);
+    return () => observer.disconnect();
+  }, [clampQuickCreatePopoverToViewport, quickCreateAnchor, quickCreateDraft]);
 
   function minutesFromIso(iso: string): number {
     const date = new Date(iso);
@@ -5597,8 +5961,8 @@ function CalendarView({
           <button type="button" className="absolute inset-0" onClick={() => { setQuickCreateDraft(null); setQuickCreateAnchor(null); }} aria-label="Close quick session creator" />
           <Panel
             id="quick-create-popover"
-            className="absolute w-[300px] max-w-[calc(100vw-1.5rem)] animate-fadeSlide bg-white/95 p-2.5 shadow-[0_14px_32px_rgba(15,23,42,0.24)] dark:bg-[#11151d]/95"
-            style={{ left: `${quickCreateAnchor.left}px`, top: `${quickCreateAnchor.top}px` }}
+            className="absolute w-[300px] max-w-[calc(100vw-1.5rem)] overflow-y-auto animate-fadeSlide bg-white/95 p-2.5 shadow-[0_14px_32px_rgba(15,23,42,0.24)] dark:bg-[#11151d]/95"
+            style={{ left: `${quickCreateAnchor.left}px`, top: `${quickCreateAnchor.top}px`, maxHeight: "calc(100vh - 24px)" }}
             onClick={(event) => event.stopPropagation()}
           >
             <input value={quickCreateDraft.title} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, title: event.target.value } : curr)} placeholder={quickCreateDraft.mode === "edit" ? "Session title" : "New Event"} className="w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold outline-none placeholder:text-slate-400" />
@@ -5644,6 +6008,33 @@ function CalendarView({
                     <input type="time" value={quickCreateDraft.end} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, end: event.target.value } : curr)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]" />
                   </div>
                 )}
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+                  <input
+                    type="date"
+                    value={formatDateKey(quickCreateDraft.date)}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      if (!next) return;
+                      setQuickCreateDraft((curr) => (curr ? { ...curr, date: new Date(`${next}T12:00:00`) } : curr));
+                    }}
+                    className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-7 px-2 text-[11px]"
+                    onClick={() =>
+                      setQuickCreateDraft((curr) => {
+                        if (!curr) return curr;
+                        const next = new Date(curr.date);
+                        next.setDate(next.getDate() + 7);
+                        return { ...curr, date: next };
+                      })
+                    }
+                  >
+                    +1 week
+                  </Button>
+                </div>
                 <select value={quickCreateDraft.cadence} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, cadence: event.target.value as SessionCadence } : curr)} className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]">
                   <option value="none">Does not repeat</option>
                   <option value="weekly">Repeats weekly</option>

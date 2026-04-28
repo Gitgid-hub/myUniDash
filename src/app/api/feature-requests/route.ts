@@ -103,3 +103,33 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const authUser = await getAuthUserFromRequest(request);
+    if (!authUser) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (!ADMIN_EMAILS.has(authUser.email.toLowerCase())) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const body = (await request.json()) as { id?: unknown };
+    const requestId = typeof body.id === "number" ? body.id : Number.parseInt(String(body.id ?? ""), 10);
+    if (!Number.isFinite(requestId) || requestId <= 0) {
+      return NextResponse.json({ error: "valid id is required" }, { status: 400 });
+    }
+
+    const supabase = getServiceSupabaseClient();
+    const { error } = await supabase.from("feature_requests").delete().eq("id", requestId);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown server error" },
+      { status: 500 }
+    );
+  }
+}
