@@ -180,7 +180,7 @@ export interface Store {
 
 export interface SearchResult {
   id: string;
-  kind: "task" | "course";
+  kind: "task" | "course" | "note" | "feature";
   title: string;
   subtitle: string;
   score: number;

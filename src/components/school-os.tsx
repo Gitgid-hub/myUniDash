@@ -1248,8 +1248,66 @@ export function SchoolOS() {
   }, [state.ui.activeView, dispatch]);
 
   const searchResults = useMemo(
-    () => searchAll(searchQuery, state.tasks, state.courses),
-    [searchQuery, state.tasks, state.courses]
+    () => {
+      const base = searchAll(searchQuery, state.tasks, state.courses);
+      const q = searchQuery.trim().toLowerCase();
+      if (!q) return base;
+
+      const noteResults = (state.classNotes ?? [])
+        .map((note) => {
+          const course = state.courses.find((c) => c.id === note.courseId);
+          const bodyPreview = note.bodyMarkdown.replace(/<[^>]+>/g, " ").slice(0, 240);
+          const haystack = `${note.title} ${bodyPreview} ${note.occurredOn} ${course?.name ?? ""} ${course?.code ?? ""}`.toLowerCase();
+          const score = haystack.includes(q) ? 7 + Number(note.title.toLowerCase().includes(q)) : 0;
+          return {
+            id: note.id,
+            kind: "note" as const,
+            title: note.title || "Class note",
+            subtitle: `${course ? `${course.code} · ${course.name}` : "Class note"} · ${note.occurredOn}`,
+            score
+          };
+        })
+        .filter((result) => result.score > 0);
+
+      const featureCatalog: Array<{ id: string; title: string; subtitle: string; terms: string; score: number }> = [
+        {
+          id: "feature-request-panel",
+          title: "Request a missing feature",
+          subtitle: "Settings → feedback request box",
+          terms: "feature request feedback bug report suggestion request box",
+          score: 11
+        },
+        {
+          id: "user-requests-tab",
+          title: "User Requests",
+          subtitle: "Sidebar → user feature requests list",
+          terms: "user requests feature requests admin requests inbox",
+          score: 10
+        },
+        {
+          id: "settings-degree-panel",
+          title: "Degree roadmap import",
+          subtitle: "Settings → degree search and load roadmap",
+          terms: "degree roadmap catalog huji courses import settings",
+          score: 9
+        }
+      ];
+
+      const featureResults = featureCatalog
+        .filter((item) => `${item.title} ${item.subtitle} ${item.terms}`.toLowerCase().includes(q))
+        .map((item) => ({
+          id: item.id,
+          kind: "feature" as const,
+          title: item.title,
+          subtitle: item.subtitle,
+          score: item.score + Number(item.title.toLowerCase().includes(q))
+        }));
+
+      return [...base, ...noteResults, ...featureResults]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 16);
+    },
+    [searchQuery, state.tasks, state.courses, state.classNotes]
   );
   const focusedTask = state.ui.focusedTaskId
     ? state.tasks.find((task) => task.id === state.ui.focusedTaskId)
@@ -1438,10 +1496,6 @@ export function SchoolOS() {
     setComposerInitialCourseId(courseId);
     dispatch({ type: "set-composer", payload: true });
   }, [dispatch]);
-  const handleOpenAddSession = useCallback((anchorDate?: Date, start?: string, end?: string) => {
-    setSessionDraft({ anchorDate, start, end });
-    setIsSessionEditorOpen(true);
-  }, []);
   const handleCalendarSessionClick = useCallback((courseId: string, meetingId: string, anchorDate?: Date) => {
     setSelectedCalendarSession({
       courseId,
@@ -2135,10 +2189,20 @@ export function SchoolOS() {
                       />
                     </div>
                   )}
-                  <Button variant="outline" onClick={() => dispatch({ type: "set-search", payload: true })}>
-                    <Command className="mr-1 h-4 w-4" />
-                    Search
-                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => dispatch({ type: "set-search", payload: true })}
+                    className="inline-flex h-10 min-w-[260px] items-center justify-between rounded-full border border-slate-200 bg-slate-50 px-4 text-sm text-slate-600 transition hover:bg-slate-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Search className="h-4 w-4 text-slate-400" />
+                      Search tasks, notes, features...
+                    </span>
+                    <span className="inline-flex items-center rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-500 dark:border-white/15 dark:bg-white/[0.06] dark:text-slate-300">
+                      <Command className="mr-1 h-3 w-3" />
+                      K
+                    </span>
+                  </button>
                   <Button variant="outline" onClick={() => setIsUtilityOpen(true)} data-onboarding="guide-button">
                     <BookOpen className="mr-1 h-4 w-4" />
                     Guide
@@ -2225,7 +2289,6 @@ export function SchoolOS() {
               selectedDate={selectedCalendarDate}
               onSelectDate={setSelectedCalendarDate}
               visibleCourseIds={visibleCourseIds}
-              onOpenAddSession={handleOpenAddSession}
               onSessionClick={handleCalendarSessionClick}
               onSessionDoubleClick={handleCalendarSessionDoubleClick}
               onClearSessionSelection={() => setSelectedCalendarSession(null)}
@@ -3225,9 +3288,31 @@ export function SchoolOS() {
             if (result.kind === "task") {
               dispatch({ type: "set-focus", payload: result.id });
               dispatch({ type: "set-view", payload: "upcoming" });
-            } else {
+            } else if (result.kind === "course") {
               dispatch({ type: "set-course-filter", payload: result.id });
               dispatch({ type: "set-view", payload: "by-course" });
+            } else if (result.kind === "note") {
+              dispatch({ type: "set-view", payload: "class-notes" });
+              setClassNoteEditorId(result.id);
+            } else if (result.kind === "feature") {
+              if (result.id === "user-requests-tab" && isAdmin) {
+                dispatch({ type: "set-view", payload: "user-requests" });
+              } else {
+                setIsSettingsOpen(true);
+                const selector = result.id === "feature-request-panel"
+                  ? "[data-onboarding='feature-request-panel']"
+                  : result.id === "settings-degree-panel"
+                    ? "[data-onboarding='settings-degree-panel']"
+                    : null;
+                if (selector) {
+                  window.setTimeout(() => {
+                    const el = document.querySelector(selector);
+                    if (el instanceof HTMLElement) {
+                      el.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }
+                  }, 120);
+                }
+              }
             }
             dispatch({ type: "set-search", payload: false });
           }}
@@ -3766,7 +3851,6 @@ function CalendarView({
   selectedDate,
   onSelectDate,
   visibleCourseIds,
-  onOpenAddSession,
   onSessionClick,
   onSessionDoubleClick,
   onClearSessionSelection,
@@ -3789,7 +3873,6 @@ function CalendarView({
   selectedDate: Date;
   onSelectDate: (date: Date) => void;
   visibleCourseIds: string[];
-  onOpenAddSession: (anchorDate?: Date, start?: string, end?: string) => void;
   onSessionClick: (courseId: string, meetingId: string, anchorDate?: Date) => void;
   onSessionDoubleClick?: (courseId: string, meetingId: string, anchorDate?: Date) => void;
   onClearSessionSelection?: () => void;
@@ -4682,7 +4765,6 @@ function CalendarView({
                 onChange={(event) => onSelectDate(new Date(`${event.target.value}T12:00:00`))}
                 className="h-8 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs outline-none dark:border-white/10 dark:bg-white/[0.04]"
               />
-              <Button variant="outline" onClick={() => onOpenAddSession(selectedDate)} className="h-8 rounded-full px-2.5 text-xs">Add</Button>
               <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
                 <Button variant={mode === "month" ? "primary" : "ghost"} onClick={() => onMode("month")} className="h-7 rounded-full px-2.5 text-xs">Month</Button>
                 <Button variant={mode === "week" ? "primary" : "ghost"} onClick={() => onMode("week")} className="h-7 rounded-full px-2.5 text-xs">Week</Button>
@@ -4871,7 +4953,7 @@ function CalendarView({
                       className="pointer-events-none absolute left-[6px] right-[6px] rounded-2xl border-2 border-dashed border-sky-400/70 bg-sky-100/45"
                       style={{
                         top: ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX,
-                        height: Math.max(20, ((creatingSession.endMinutes - creatingSession.startMinutes) / 60) * WEEK_TIMELINE_ROW_PX)
+                        height: Math.max(28, ((creatingSession.endMinutes - creatingSession.startMinutes) / 60) * WEEK_TIMELINE_ROW_PX)
                       }}
                     />
                   )}
@@ -4881,7 +4963,7 @@ function CalendarView({
                       className="pointer-events-none absolute left-[6px] right-[6px] rounded-2xl border border-sky-400/60 bg-sky-100/50"
                       style={{
                         top: ((parseTimeValue(quickCreateDraft.start) - timelineHours[0]) * WEEK_TIMELINE_ROW_PX),
-                        height: Math.max(20, (parseTimeValue(quickCreateDraft.end) - parseTimeValue(quickCreateDraft.start)) * WEEK_TIMELINE_ROW_PX)
+                        height: Math.max(28, (parseTimeValue(quickCreateDraft.end) - parseTimeValue(quickCreateDraft.start)) * WEEK_TIMELINE_ROW_PX)
                       }}
                     >
                       <div className="px-2 py-1 text-[11px] font-medium text-sky-900/80 dark:text-sky-100/80">
@@ -5172,7 +5254,18 @@ function CalendarView({
   return (
     <Panel data-onboarding="calendar-week-grid" className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white/90 dark:bg-[#101317]/90">
       {mode !== "week" && (
-        <div className="mb-2 flex flex-wrap items-center justify-end gap-1.5">
+        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+          {mode === "day" ? (
+            <div className="px-1 pt-0.5">
+              <p className="whitespace-nowrap text-[21px] leading-none tracking-[-0.02em] text-slate-900 dark:text-slate-100">
+                <span className="font-semibold">{selectedDate.toLocaleDateString(undefined, { month: "long" })}</span>{" "}
+                <span className="font-normal text-slate-500 dark:text-slate-400">{selectedDate.toLocaleDateString(undefined, { year: "numeric" })}</span>
+              </p>
+            </div>
+          ) : (
+            <div />
+          )}
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
           <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
             <Button
               variant="ghost"
@@ -5198,7 +5291,6 @@ function CalendarView({
             onChange={(event) => onSelectDate(new Date(`${event.target.value}T12:00:00`))}
             className="h-8 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs outline-none dark:border-white/10 dark:bg-white/[0.04]"
           />
-          <Button variant="outline" onClick={() => onOpenAddSession(selectedDate)} className="h-8 rounded-full px-2.5 text-xs">Add</Button>
           <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
             <Button variant={mode === "month" ? "primary" : "ghost"} onClick={() => onMode("month")} className="h-7 rounded-full px-2.5 text-xs">Month</Button>
             <Button variant="ghost" onClick={() => onMode("week")} className="h-7 rounded-full px-2.5 text-xs">Week</Button>
@@ -5210,6 +5302,7 @@ function CalendarView({
             >
               Day
             </Button>
+          </div>
           </div>
         </div>
       )}
@@ -5570,7 +5663,7 @@ function CalendarView({
                       className="pointer-events-none absolute left-[8px] right-[8px] rounded-[18px] border-2 border-dashed border-sky-400/70 bg-sky-100/45"
                       style={{
                         top: ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight,
-                        height: Math.max(20, ((creatingSession.endMinutes - creatingSession.startMinutes) / 60) * dayHourHeight)
+                        height: Math.max(28, ((creatingSession.endMinutes - creatingSession.startMinutes) / 60) * dayHourHeight)
                       }}
                     />
                   )}
@@ -5580,7 +5673,7 @@ function CalendarView({
                       className="pointer-events-none absolute left-[8px] right-[8px] rounded-[18px] border border-sky-400/60 bg-sky-100/50"
                       style={{
                         top: ((parseTimeValue(quickCreateDraft.start) - timelineHours[0]) * dayHourHeight),
-                        height: Math.max(20, (parseTimeValue(quickCreateDraft.end) - parseTimeValue(quickCreateDraft.start)) * dayHourHeight)
+                        height: Math.max(28, (parseTimeValue(quickCreateDraft.end) - parseTimeValue(quickCreateDraft.start)) * dayHourHeight)
                       }}
                     >
                       <div className="px-2 py-1 text-[11px] font-medium text-sky-900/80 dark:text-sky-100/80">
