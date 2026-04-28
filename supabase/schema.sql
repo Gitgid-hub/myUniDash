@@ -154,3 +154,58 @@ create policy "Users can read own feature requests"
   for select
   to authenticated
   using (auth.uid() = user_id);
+
+-- ---------------------------------------------------------------------------
+-- Storage: task file attachments
+-- Run once in Supabase Dashboard → SQL Editor, or via Supabase CLI migration.
+-- ---------------------------------------------------------------------------
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'user-attachments',
+  'user-attachments',
+  false,
+  33554432,  -- 32 MB, matches TASK_ATTACHMENT_MAX_BYTES
+  null        -- all mime types allowed (validated client-side)
+)
+on conflict (id) do nothing;
+
+drop policy if exists "Users can upload own attachments" on storage.objects;
+create policy "Users can upload own attachments"
+  on storage.objects
+  for insert
+  to authenticated
+  with check (
+    bucket_id = 'user-attachments' and
+    (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can read own attachments" on storage.objects;
+create policy "Users can read own attachments"
+  on storage.objects
+  for select
+  to authenticated
+  using (
+    bucket_id = 'user-attachments' and
+    (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can update own attachments" on storage.objects;
+create policy "Users can update own attachments"
+  on storage.objects
+  for update
+  to authenticated
+  using (
+    bucket_id = 'user-attachments' and
+    (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can delete own attachments" on storage.objects;
+create policy "Users can delete own attachments"
+  on storage.objects
+  for delete
+  to authenticated
+  using (
+    bucket_id = 'user-attachments' and
+    (storage.foldername(name))[1] = auth.uid()::text
+  );

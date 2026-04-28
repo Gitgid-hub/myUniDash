@@ -93,6 +93,7 @@ function ClassNoteBodyPreview({
 }
 
 const STACK_VISIBLE = 5;
+const ENABLE_AI_SUMMARY = false;
 
 function CourseNotesStack({
   list,
@@ -587,7 +588,7 @@ function ClassNoteAttachmentsBar({
             </p>
           ) : null}
           {err ? <p className="mt-1.5 text-xs text-rose-600 dark:text-rose-400">{err}</p> : null}
-          {summaryError ? (
+          {ENABLE_AI_SUMMARY && summaryError ? (
             <p className="mt-1.5 text-xs text-rose-600 dark:text-rose-400">{summaryError}</p>
           ) : null}
 
@@ -597,7 +598,7 @@ function ClassNoteAttachmentsBar({
                 No files yet. Use <span className="font-medium text-slate-700 dark:text-slate-200">Upload</span> or paste images in the editor.
               </li>
             ) : (
-              attachments.map((att) => renderRow(att, !isClassNoteImageAttachment(att)))
+              attachments.map((att) => renderRow(att, ENABLE_AI_SUMMARY && !isClassNoteImageAttachment(att)))
             )}
           </ul>
         </>

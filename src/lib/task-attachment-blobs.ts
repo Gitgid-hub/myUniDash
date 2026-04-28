@@ -1,9 +1,20 @@
 import { nowIso } from "@/lib/date";
+import { getSupabaseClient } from "@/lib/supabase";
 import type { TaskAttachment } from "@/lib/types";
 
 export const TASK_ATTACHMENT_MAX_BYTES = 32 * 1024 * 1024;
 export const TASK_ATTACHMENT_ACCEPT =
   ".pdf,.doc,.docx,.zip,.png,.jpg,.jpeg,.webp,.txt,.rtf,.ppt,.pptx,.odt,.csv";
+
+const BUCKET = "user-attachments";
+
+function storagePath(userId: string, taskId: string, attachmentId: string): string {
+  return `${userId}/tasks/${taskId}/${attachmentId}`;
+}
+
+// ---------------------------------------------------------------------------
+// IndexedDB fallback (used when no userId is available / offline mode)
+// ---------------------------------------------------------------------------
 
 const DB_NAME = "school-os-task-files";
 const STORE = "blobs";
@@ -13,17 +24,7 @@ function blobKey(taskId: string, attachmentId: string): string {
   return `${taskId}::${attachmentId}`;
 }
 
-export function createTaskAttachmentMeta(file: File, id: string): TaskAttachment {
-  return {
-    id,
-    name: file.name,
-    mimeType: file.type || "application/octet-stream",
-    size: file.size,
-    uploadedAt: nowIso()
-  };
-}
-
-export function openTaskBlobsDb(): Promise<IDBDatabase> {
+function openTaskBlobsDb(): Promise<IDBDatabase> {
   if (typeof indexedDB === "undefined") {
     return Promise.reject(new Error("IndexedDB unavailable"));
   }
@@ -40,7 +41,7 @@ export function openTaskBlobsDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveTaskAttachmentBlob(taskId: string, attachmentId: string, blob: Blob): Promise<void> {
+async function idbSave(taskId: string, attachmentId: string, blob: Blob): Promise<void> {
   const db = await openTaskBlobsDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
@@ -51,7 +52,7 @@ export async function saveTaskAttachmentBlob(taskId: string, attachmentId: strin
   });
 }
 
-export async function getTaskAttachmentBlob(taskId: string, attachmentId: string): Promise<Blob | undefined> {
+async function idbGet(taskId: string, attachmentId: string): Promise<Blob | undefined> {
   const db = await openTaskBlobsDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readonly");
@@ -61,7 +62,7 @@ export async function getTaskAttachmentBlob(taskId: string, attachmentId: string
   });
 }
 
-export async function deleteTaskAttachmentBlob(taskId: string, attachmentId: string): Promise<void> {
+async function idbDelete(taskId: string, attachmentId: string): Promise<void> {
   const db = await openTaskBlobsDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
@@ -71,7 +72,7 @@ export async function deleteTaskAttachmentBlob(taskId: string, attachmentId: str
   });
 }
 
-export async function deleteTaskAttachmentBlobsForTask(taskId: string): Promise<void> {
+async function idbDeleteForTask(taskId: string): Promise<void> {
   const db = await openTaskBlobsDb();
   const prefix = `${taskId}::`;
   return new Promise((resolve, reject) => {
@@ -79,7 +80,7 @@ export async function deleteTaskAttachmentBlobsForTask(taskId: string): Promise<
     tx.onerror = () => reject(tx.error ?? new Error("IndexedDB batch delete failed"));
     tx.oncomplete = () => resolve();
     const store = tx.objectStore(STORE);
-    const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`, false, true);
+    const range = IDBKeyRange.bound(prefix, `${prefix}￿`, false, true);
     const req = store.openCursor(range);
     req.onerror = () => reject(req.error ?? new Error("IndexedDB cursor failed"));
     req.onsuccess = () => {
@@ -90,4 +91,81 @@ export async function deleteTaskAttachmentBlobsForTask(taskId: string): Promise<
       }
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export function createTaskAttachmentMeta(file: File, id: string): TaskAttachment {
+  return {
+    id,
+    name: file.name,
+    mimeType: file.type || "application/octet-stream",
+    size: file.size,
+    uploadedAt: nowIso()
+  };
+}
+
+export async function saveTaskAttachmentBlob(
+  userId: string | null | undefined,
+  taskId: string,
+  attachmentId: string,
+  blob: Blob
+): Promise<void> {
+  const supabase = userId ? getSupabaseClient() : null;
+  if (supabase && userId) {
+    const { error } = await supabase.storage
+      .from(BUCKET)
+      .upload(storagePath(userId, taskId, attachmentId), blob, { upsert: true });
+    if (error) throw new Error(`Upload failed: ${error.message}`);
+    return;
+  }
+  await idbSave(taskId, attachmentId, blob);
+}
+
+export async function getTaskAttachmentBlob(
+  userId: string | null | undefined,
+  taskId: string,
+  attachmentId: string
+): Promise<Blob | undefined> {
+  const supabase = userId ? getSupabaseClient() : null;
+  if (supabase && userId) {
+    const { data, error } = await supabase.storage
+      .from(BUCKET)
+      .download(storagePath(userId, taskId, attachmentId));
+    if (error) return undefined;
+    return data ?? undefined;
+  }
+  return idbGet(taskId, attachmentId);
+}
+
+export async function deleteTaskAttachmentBlob(
+  userId: string | null | undefined,
+  taskId: string,
+  attachmentId: string
+): Promise<void> {
+  const supabase = userId ? getSupabaseClient() : null;
+  if (supabase && userId) {
+    await supabase.storage.from(BUCKET).remove([storagePath(userId, taskId, attachmentId)]);
+    return;
+  }
+  await idbDelete(taskId, attachmentId);
+}
+
+export async function deleteTaskAttachmentBlobsForTask(
+  userId: string | null | undefined,
+  taskId: string
+): Promise<void> {
+  const supabase = userId ? getSupabaseClient() : null;
+  if (supabase && userId) {
+    const prefix = `${userId}/tasks/${taskId}/`;
+    const { data } = await supabase.storage.from(BUCKET).list(`${userId}/tasks/${taskId}`);
+    if (data && data.length > 0) {
+      const paths = data.map((f) => `${prefix}${f.name}`);
+      await supabase.storage.from(BUCKET).remove(paths);
+    }
+    return;
+  }
+  await idbDeleteForTask(taskId);
 }

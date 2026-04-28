@@ -1135,7 +1135,7 @@ export function SchoolOS() {
     (id: string) => {
       const task = state.tasks.find((t) => t.id === id);
       if (task?.attachments?.length) {
-        void deleteTaskAttachmentBlobsForTask(id).catch(() => {});
+        void deleteTaskAttachmentBlobsForTask(user?.id, id).catch(() => {});
       }
       dispatch({ type: "delete-task", payload: id });
     },
@@ -5711,6 +5711,7 @@ function TaskComposer({
     attachments?: TaskAttachment[];
   }) => void | Promise<void>;
 }) {
+  const { user: composerUser } = useAuth();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [courseId, setCourseId] = useState<string | "general" | "">(initialCourseId ?? "");
@@ -5765,7 +5766,7 @@ function TaskComposer({
       for (const file of pendingFiles) {
         const attId = createId("tatt");
         const meta = createTaskAttachmentMeta(file, attId);
-        await saveTaskAttachmentBlob(taskId, attId, file);
+        await saveTaskAttachmentBlob(composerUser?.id, taskId, attId, file);
         attachments.push(meta);
       }
       await Promise.resolve(
@@ -5781,7 +5782,7 @@ function TaskComposer({
       );
       onClose();
     } catch (e) {
-      void deleteTaskAttachmentBlobsForTask(taskId).catch(() => {});
+      void deleteTaskAttachmentBlobsForTask(composerUser?.id, taskId).catch(() => {});
       setFileHint(e instanceof Error ? e.message : "Could not save attachments.");
     } finally {
       setSaving(false);
@@ -5952,6 +5953,7 @@ function TaskDetailModal({
   onClose: () => void;
   onSave: (task: Partial<Task> & { id: string }) => void;
 }) {
+  const { user: detailUser } = useAuth();
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [courseId, setCourseId] = useState<string | "general">(task.courseId);
@@ -5998,7 +6000,7 @@ function TaskDetailModal({
           next[a.id] = true;
           continue;
         }
-        const b = await getTaskAttachmentBlob(task.id, a.id);
+        const b = await getTaskAttachmentBlob(detailUser?.id, task.id, a.id);
         next[a.id] = !!(b && b.size > 0);
       }
       if (!cancelled) setBlobReady(next);
@@ -6070,7 +6072,7 @@ function TaskDetailModal({
       window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
       return;
     }
-    const blob = await getTaskAttachmentBlob(task.id, att.id);
+    const blob = await getTaskAttachmentBlob(detailUser?.id, task.id, att.id);
     if (!blob?.size) return;
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank", "noopener,noreferrer");
@@ -6092,16 +6094,16 @@ function TaskDetailModal({
       for (const a of attachments) {
         const file = pendingFilesById[a.id];
         if (!file) continue;
-        await saveTaskAttachmentBlob(task.id, a.id, file);
-        const verify = await getTaskAttachmentBlob(task.id, a.id);
+        await saveTaskAttachmentBlob(detailUser?.id, task.id, a.id, file);
+        const verify = await getTaskAttachmentBlob(detailUser?.id, task.id, a.id);
         if (!verify || verify.size < 1) {
-          throw new Error("Storage wrote nothing readable (private mode, full disk, or blocked IndexedDB).");
+          throw new Error("Upload failed or storage is unavailable. Please try again.");
         }
       }
       const prev = task.attachments ?? [];
       for (const p of prev) {
         if (!attachments.some((x) => x.id === p.id)) {
-          await deleteTaskAttachmentBlob(task.id, p.id);
+          await deleteTaskAttachmentBlob(detailUser?.id, task.id, p.id);
         }
       }
       onSave({

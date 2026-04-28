@@ -4,6 +4,7 @@ import { getServiceSupabaseClient } from "@/lib/supabase-server";
 export const dynamic = "force-dynamic";
 
 const MAX_INPUT_CHARS = 120_000;
+const ENABLE_AI_SUMMARY = false;
 
 /** Turn OpenAI error JSON/text into a short user-facing string (Hebrew where we map known codes). */
 function formatOpenAiUpstreamError(status: number, errText: string): string {
@@ -51,6 +52,13 @@ async function getUserIdFromRequest(request: NextRequest): Promise<string | null
 }
 
 export async function POST(request: NextRequest) {
+  if (!ENABLE_AI_SUMMARY) {
+    return NextResponse.json(
+      { error: "AI summary is temporarily disabled while we harden this feature." },
+      { status: 503 }
+    );
+  }
+
   const userId = await getUserIdFromRequest(request);
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
