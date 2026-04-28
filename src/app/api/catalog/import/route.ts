@@ -164,9 +164,12 @@ async function fetchHujiMeetingsByCourseCode(courseCode: string, year: number): 
 
     for (const session of sessions) {
       if (!session || typeof session !== "object") continue;
-      const weekday = mapHujiDay((session as { dayOfWeek?: unknown }).dayOfWeek as number | undefined);
-      const start = msToHm((session as { startTime?: unknown }).startTime as number | undefined);
-      const end = msToHm((session as { endTime?: unknown }).endTime as number | undefined);
+      const rawDayOfWeek = (session as { dayOfWeek?: unknown }).dayOfWeek;
+      const rawStartTime = (session as { startTime?: unknown }).startTime;
+      const rawEndTime = (session as { endTime?: unknown }).endTime;
+      const weekday = mapHujiDay(typeof rawDayOfWeek === "number" ? rawDayOfWeek : undefined);
+      const start = typeof rawStartTime === "number" ? msToHm(rawStartTime) : null;
+      const end = typeof rawEndTime === "number" ? msToHm(rawEndTime) : null;
       if (!weekday || !start || !end) continue;
 
       const location = extractLocation(session as Record<string, unknown>);

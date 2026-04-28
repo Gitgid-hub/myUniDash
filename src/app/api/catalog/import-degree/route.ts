@@ -10,6 +10,19 @@ type RoadmapCourseCandidate = {
   roadmapSectionLabel?: string;
 };
 
+type CatalogCourseRow = {
+  source: string;
+  external_id: string;
+  course_number: string;
+  name_he: string | null;
+  name_en: string | null;
+  faculty: string | null;
+  department: string | null;
+  credits: number | null;
+  updated_at?: string | null;
+  last_seen_at?: string | null;
+};
+
 const DEGREE_ROADMAP_CODES: Record<DegreeId, string> = {
   biology: process.env.HUJI_ROADMAP_BIOLOGY_CODE ?? "570-4010",
   linguistics: process.env.HUJI_ROADMAP_181_CODE ?? "181-1751"
@@ -101,10 +114,15 @@ async function fetchRoadmapCourses(roadmapCode: string, year: number): Promise<R
       const code = extractNumber(asText((course as { code?: unknown }).code));
       if (!code) continue;
       const nameObj = (course as { name?: unknown }).name;
-      const title =
-        (nameObj && typeof nameObj === "object" && asText((nameObj as { he?: unknown }).he)) ||
-        (nameObj && typeof nameObj === "object" && asText((nameObj as { en?: unknown }).en)) ||
-        `Course ${code}`;
+      const titleHe =
+        nameObj && typeof nameObj === "object"
+          ? asText((nameObj as { he?: unknown }).he)
+          : "";
+      const titleEn =
+        nameObj && typeof nameObj === "object"
+          ? asText((nameObj as { en?: unknown }).en)
+          : "";
+      const title: string = titleHe || titleEn || `Course ${code}`;
       if (!out.has(code)) {
         out.set(code, {
           courseNumber: code,
@@ -148,8 +166,8 @@ export async function POST(request: NextRequest) {
       .eq("source", "huji_shnaton")
       .in("course_number", numbers);
 
-    const byNumber = new Map<string, (typeof catalogRows extends Array<infer T> ? T : never)>();
-    for (const row of catalogRows ?? []) {
+    const byNumber = new Map<string, CatalogCourseRow>();
+    for (const row of (catalogRows ?? []) as CatalogCourseRow[]) {
       byNumber.set(row.course_number, row);
     }
 
