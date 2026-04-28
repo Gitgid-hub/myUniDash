@@ -109,6 +109,7 @@ export interface WorkBlock {
 
 export type MainView =
   | "dashboard"
+  | "courses"
   | "today"
   | "upcoming"
   | "overdue"

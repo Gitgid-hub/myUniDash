@@ -3,25 +3,24 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import {
+  Archive,
   BarChart3,
   BookOpen,
   CalendarDays,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Circle,
   Star,
   StickyNote,
   Command,
   Copy,
+  Cog,
   KanbanSquare,
   LayoutDashboard,
   Moon,
   Paperclip,
   Plus,
   Search,
-  Settings,
   Sun,
   Timer,
   Trash2,
@@ -81,6 +80,7 @@ const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ class
   { id: "calendar", label: "Calendar", icon: CalendarDays },
   { id: "class-notes", label: "Class Notes", icon: StickyNote },
   { id: "kanban", label: "Kanban", icon: KanbanSquare },
+  { id: "courses", label: "Courses", icon: BookOpen },
   { id: "upcoming", label: "Upcoming", icon: CalendarDays },
   { id: "by-course", label: "By Course", icon: BookOpen },
   { id: "by-priority", label: "By Priority", icon: BarChart3 }
@@ -90,12 +90,34 @@ const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ class
 const POST_SESSION_PROMPT_STORAGE_KEY = "school-os-post-session-prompt-dismissed:v1";
 const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gmail.com"]);
 const MAX_FEATURE_REQUEST_SCREENSHOTS = 3;
-const CATALOG_DEGREES = [
-  { id: "biology", label: "Biology (HUJI 570)" },
-  { id: "linguistics", label: "Linguistics (HUJI 181)" }
-] as const;
-type CatalogDegreeId = (typeof CATALOG_DEGREES)[number]["id"];
+type CatalogDegreeOption = {
+  id: string;
+  roadmapCode: string;
+  label: string;
+};
+const DEFAULT_CATALOG_DEGREES: CatalogDegreeOption[] = [
+  { id: "biology", roadmapCode: "570-4010", label: "Biology (HUJI 570-4010)" },
+  { id: "linguistics", roadmapCode: "181-1751", label: "Linguistics (HUJI 181-1751)" }
+];
 const CATALOG_DEGREE_STORAGE_KEY = "school-os:catalog-degree:v1";
+
+function dedupeLabelSegments(value: string): string {
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  if (!cleaned) return cleaned;
+  const segments = cleaned
+    .split(/\s*[,\-–—|]\s*/g)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const segment of segments) {
+    const key = segment.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(segment);
+  }
+  return out.length > 0 ? out.join(" - ") : cleaned;
+}
 
 function loadPostSessionPromptDismissedKeys(): Set<string> {
   if (typeof window === "undefined") return new Set();
@@ -175,6 +197,8 @@ function viewTitle(view: MainView): string {
   switch (view) {
     case "dashboard":
       return "Overview";
+    case "courses":
+      return "Courses";
     case "today":
       return "Today";
     case "upcoming":
@@ -396,7 +420,8 @@ export function SchoolOS() {
   const calendarUndoStackRef = useRef<CalendarUndoEntry[]>([]);
   const taskUndoStackRef = useRef<TaskUndoEntry[]>([]);
   const [sessionDraft, setSessionDraft] = useState<{ courseId?: string; meetingId?: string; anchorDate?: Date; start?: string; end?: string } | undefined>();
-  const [sessionHub, setSessionHub] = useState<{ courseId: string; meetingId: string; anchorDate: Date } | null>(null);
+  const [selectedCalendarSession, setSelectedCalendarSession] = useState<{ courseId: string; meetingId: string; anchorDate: Date } | null>(null);
+  const [sessionDeletePrompt, setSessionDeletePrompt] = useState<{ courseId: string; meetingId: string; anchorDate: Date } | null>(null);
   const [classNoteEditorId, setClassNoteEditorId] = useState<string | null>(null);
   const [postSessionPrompt, setPostSessionPrompt] = useState<{
     courseId: string;
@@ -425,14 +450,15 @@ export function SchoolOS() {
   const [catalogImportingId, setCatalogImportingId] = useState<string | null>(null);
   const [catalogDegreeImporting, setCatalogDegreeImporting] = useState(false);
   const [catalogViewMode, setCatalogViewMode] = useState<"search" | "roadmap">("search");
+  const [catalogDegreeSearchQuery, setCatalogDegreeSearchQuery] = useState("");
+  const [isCatalogDegreeOptionsOpen, setIsCatalogDegreeOptionsOpen] = useState(false);
+  const [catalogDegreeSearchLoading, setCatalogDegreeSearchLoading] = useState(false);
+  const [catalogDegreeOptions, setCatalogDegreeOptions] = useState<CatalogDegreeOption[]>(DEFAULT_CATALOG_DEGREES);
   const degreeLoadRequestSeqRef = useRef(0);
-  const [catalogDegree, setCatalogDegree] = useState<CatalogDegreeId>(() => {
-    if (typeof window === "undefined") return "biology";
+  const [catalogDegree, setCatalogDegree] = useState<string>(() => {
+    if (typeof window === "undefined") return DEFAULT_CATALOG_DEGREES[0]?.id ?? "biology";
     const saved = window.localStorage.getItem(CATALOG_DEGREE_STORAGE_KEY);
-    if (saved && CATALOG_DEGREES.some((degree) => degree.id === saved)) {
-      return saved as CatalogDegreeId;
-    }
-    return "biology";
+    return saved && saved.length > 0 ? saved : (DEFAULT_CATALOG_DEGREES[0]?.id ?? "biology");
   });
   const [onboardingActive, setOnboardingActive] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
@@ -745,6 +771,61 @@ export function SchoolOS() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(CATALOG_DEGREE_STORAGE_KEY, catalogDegree);
   }, [catalogDegree]);
+
+  const selectedCatalogDegreeOption = useMemo(
+    () => catalogDegreeOptions.find((degree) => degree.id === catalogDegree) ?? null,
+    [catalogDegree, catalogDegreeOptions]
+  );
+
+  const searchCatalogDegrees = useCallback(async (query: string) => {
+    setCatalogDegreeSearchLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (query.trim().length > 0) params.set("q", query.trim());
+      params.set("limit", "200");
+      const res = await fetch(`/api/catalog/degrees/search?${params.toString()}`);
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Degree search failed");
+      }
+      const remote: unknown[] = Array.isArray(payload.degrees) ? payload.degrees : [];
+      const normalized: CatalogDegreeOption[] = remote
+        .map((row) => {
+          if (!row || typeof row !== "object") return null;
+          const rowObj = row as { roadmapCode?: unknown; label?: unknown };
+          const roadmapCode = typeof rowObj.roadmapCode === "string" ? rowObj.roadmapCode.trim() : "";
+          if (!roadmapCode) return null;
+          const labelRaw = typeof rowObj.label === "string" ? rowObj.label.trim() : "";
+          return {
+            id: roadmapCode,
+            roadmapCode,
+            label: labelRaw || roadmapCode
+          } satisfies CatalogDegreeOption;
+        })
+        .filter((row): row is CatalogDegreeOption => Boolean(row));
+      const trimmedQuery = query.trim();
+      if (trimmedQuery.length > 0) {
+        setCatalogDegreeOptions(normalized);
+      } else {
+        const mergedMap = new Map<string, CatalogDegreeOption>();
+        for (const base of DEFAULT_CATALOG_DEGREES) mergedMap.set(base.id, base);
+        for (const degree of normalized) mergedMap.set(degree.id, degree);
+        setCatalogDegreeOptions([...mergedMap.values()]);
+        if (![...mergedMap.keys()].includes(catalogDegree)) {
+          setCatalogDegree(DEFAULT_CATALOG_DEGREES[0]?.id ?? "biology");
+        }
+      }
+    } catch (error) {
+      setCatalogError(error instanceof Error ? error.message : "Degree search failed");
+    } finally {
+      setCatalogDegreeSearchLoading(false);
+    }
+  }, [catalogDegree]);
+
+  useEffect(() => {
+    if (!isSettingsOpen && !isCatalogPickerOpen) return;
+    void searchCatalogDegrees(catalogDegreeSearchQuery);
+  }, [catalogDegreeSearchQuery, isCatalogPickerOpen, isSettingsOpen, searchCatalogDegrees]);
 
   useEffect(() => {
     if (!onboardingActive) return;
@@ -1067,11 +1148,19 @@ export function SchoolOS() {
     setIsSessionEditorOpen(true);
   }, []);
   const handleCalendarSessionClick = useCallback((courseId: string, meetingId: string, anchorDate?: Date) => {
-    setSessionHub({
+    setSelectedCalendarSession({
       courseId,
       meetingId,
       anchorDate: anchorDate ?? selectedCalendarDate
     });
+  }, [selectedCalendarDate]);
+  const handleCalendarSessionDoubleClick = useCallback((courseId: string, meetingId: string, anchorDate?: Date) => {
+    const target = {
+      courseId,
+      meetingId,
+      anchorDate: anchorDate ?? selectedCalendarDate
+    };
+    setSelectedCalendarSession(target);
   }, [selectedCalendarDate]);
 
   const openClassNoteDraftForSession = useCallback(
@@ -1110,15 +1199,131 @@ export function SchoolOS() {
     setPostSessionPrompt(null);
   }, []);
 
-  const sessionHubCourse = sessionHub ? activeCourses.find((c) => c.id === sessionHub.courseId) : undefined;
-  const sessionHubMeeting =
-    sessionHubCourse && sessionHub ? sessionHubCourse.meetings.find((m) => m.id === sessionHub.meetingId) : undefined;
+  const selectedSessionCourse = selectedCalendarSession ? activeCourses.find((c) => c.id === selectedCalendarSession.courseId) : undefined;
+  const selectedSessionMeeting =
+    selectedSessionCourse && selectedCalendarSession
+      ? selectedSessionCourse.meetings.find((m) => m.id === selectedCalendarSession.meetingId)
+      : undefined;
 
   useEffect(() => {
-    if (sessionHub && (!sessionHubCourse || !sessionHubMeeting)) {
-      setSessionHub(null);
+    if (selectedCalendarSession && (!selectedSessionCourse || !selectedSessionMeeting)) {
+      setSelectedCalendarSession(null);
     }
-  }, [sessionHub, sessionHubCourse, sessionHubMeeting]);
+  }, [selectedCalendarSession, selectedSessionCourse, selectedSessionMeeting]);
+
+  const deleteSelectedSession = useCallback((scope: "single" | "series") => {
+    if (!selectedCalendarSession || !selectedSessionCourse || !selectedSessionMeeting) return;
+    if (scope === "series" || (selectedSessionMeeting.recurrence?.cadence ?? "weekly") === "none") {
+      updateCourseWithUndo({
+        id: selectedSessionCourse.id,
+        meetings: selectedSessionCourse.meetings.filter((meeting) => meeting.id !== selectedSessionMeeting.id)
+      });
+      setSelectedCalendarSession(null);
+      return;
+    }
+    const dateKey = formatDateKey(selectedCalendarSession.anchorDate);
+    const recurrence = selectedSessionMeeting.recurrence ?? { cadence: "weekly" as const, interval: 1, daysOfWeek: [selectedSessionMeeting.day] };
+    const nextExceptions = Array.from(new Set([...(recurrence.exceptions ?? []), dateKey]));
+    updateCourseWithUndo({
+      id: selectedSessionCourse.id,
+      meetings: selectedSessionCourse.meetings.map((meeting) =>
+        meeting.id === selectedSessionMeeting.id
+          ? { ...meeting, recurrence: { ...recurrence, exceptions: nextExceptions } }
+          : meeting
+      )
+    });
+    setSelectedCalendarSession(null);
+  }, [selectedCalendarSession, selectedSessionCourse, selectedSessionMeeting, updateCourseWithUndo]);
+
+  const deleteSelectedSessionFuture = useCallback(() => {
+    if (!selectedCalendarSession || !selectedSessionCourse || !selectedSessionMeeting) return;
+    const recurrence = selectedSessionMeeting.recurrence;
+    if (!recurrence || recurrence.cadence === "none") {
+      deleteSelectedSession("single");
+      return;
+    }
+    const untilDate = new Date(selectedCalendarSession.anchorDate);
+    untilDate.setDate(untilDate.getDate() - 1);
+    const untilIso = new Date(`${formatDateKey(untilDate)}T23:59:59`).toISOString();
+    updateCourseWithUndo({
+      id: selectedSessionCourse.id,
+      meetings: selectedSessionCourse.meetings.map((meeting) =>
+        meeting.id === selectedSessionMeeting.id
+          ? { ...meeting, recurrence: { ...recurrence, until: untilIso } }
+          : meeting
+      )
+    });
+    setSelectedCalendarSession(null);
+  }, [deleteSelectedSession, selectedCalendarSession, selectedSessionCourse, selectedSessionMeeting, updateCourseWithUndo]);
+
+  const [copiedSessionMeeting, setCopiedSessionMeeting] = useState<CourseMeeting | null>(null);
+
+  useEffect(() => {
+    const onCalendarKeyDown = (event: KeyboardEvent) => {
+      if (state.ui.activeView !== "calendar") return;
+      if (!selectedCalendarSession || !selectedSessionCourse || !selectedSessionMeeting) return;
+      const target = event.target as HTMLElement | null;
+      const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if (typing) return;
+
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        event.stopPropagation();
+        setSessionDeletePrompt({
+          courseId: selectedCalendarSession.courseId,
+          meetingId: selectedCalendarSession.meetingId,
+          anchorDate: selectedCalendarSession.anchorDate
+        });
+        return;
+      }
+      if (!event.metaKey && !event.ctrlKey && (event.key.toLowerCase() === "n" || event.key === "מ")) {
+        event.preventDefault();
+        event.stopPropagation();
+        openClassNoteDraftForSession(selectedCalendarSession.courseId, selectedCalendarSession.meetingId, selectedCalendarSession.anchorDate);
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        event.stopPropagation();
+        setCopiedSessionMeeting({ ...selectedSessionMeeting });
+        pushSchoolOsToast({ kind: "success", message: "Session copied." });
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v" && copiedSessionMeeting) {
+        event.preventDefault();
+        event.stopPropagation();
+        const day = getWeekDayFromDate(selectedCalendarDate);
+        const pasted: CourseMeeting = {
+          ...copiedSessionMeeting,
+          id: createId("meeting"),
+          day,
+          anchorDate: new Date(`${formatDateKey(selectedCalendarDate)}T12:00:00`).toISOString(),
+          recurrence:
+            copiedSessionMeeting.recurrence?.cadence === "weekly"
+              ? { ...copiedSessionMeeting.recurrence, daysOfWeek: [day] }
+              : copiedSessionMeeting.recurrence
+        };
+        updateCourseWithUndo({
+          id: selectedSessionCourse.id,
+          meetings: [...selectedSessionCourse.meetings, pasted]
+        });
+        pushSchoolOsToast({ kind: "success", message: "Session duplicated." });
+      }
+    };
+    window.addEventListener("keydown", onCalendarKeyDown, true);
+    return () => window.removeEventListener("keydown", onCalendarKeyDown, true);
+  }, [
+    copiedSessionMeeting,
+    deleteSelectedSession,
+    deleteSelectedSessionFuture,
+    openClassNoteDraftForSession,
+    selectedCalendarDate,
+    selectedCalendarSession,
+    selectedSessionCourse,
+    selectedSessionMeeting,
+    state.ui.activeView,
+    updateCourseWithUndo
+  ]);
 
   const todaysSessionOccurrences = useMemo(() => {
     const day = new Date();
@@ -1315,12 +1520,13 @@ export function SchoolOS() {
         .replace(/^Syllabus\s*-\s*/i, "")
         .replace(/\s+/g, " ")
         .trim();
+      const dedupedImportedTitle = dedupeLabelSegments(normalizedImportedTitle);
 
       const newCourseId = createId("course");
       const selectedColor = coursePalette[Math.floor(Math.random() * coursePalette.length)];
       addCourse({
         id: newCourseId,
-        name: normalizedImportedTitle,
+        name: dedupedImportedTitle,
         code: imported.courseNumber,
         source: imported.source,
         externalCourseId: imported.externalId,
@@ -1356,7 +1562,7 @@ export function SchoolOS() {
         if (mappedChoiceSets.length > 0) {
           setPendingSessionChoiceFlow({
           courseId: newCourseId,
-          courseName: normalizedImportedTitle,
+          courseName: dedupedImportedTitle,
           courseColor: selectedColor,
           activeSetIndex: 0,
           sets: mappedChoiceSets
@@ -1366,6 +1572,7 @@ export function SchoolOS() {
         }
       }
       setIsCatalogPickerOpen(false);
+      setIsSettingsOpen(false);
       setCatalogQuery("");
       setIsCourseActionsOpen(false);
     } catch (error) {
@@ -1375,7 +1582,7 @@ export function SchoolOS() {
     }
   }, [addCourse, dispatch, getAuthHeader, state.courses]);
 
-  const loadDegreeRoadmapCourses = useCallback(async (degreeId: CatalogDegreeId, showToast = true) => {
+  const loadDegreeRoadmapCourses = useCallback(async (degreeId: string, showToast = true) => {
     const requestSeq = degreeLoadRequestSeqRef.current + 1;
     degreeLoadRequestSeqRef.current = requestSeq;
     setCatalogDegreeImporting(true);
@@ -1389,7 +1596,10 @@ export function SchoolOS() {
       const res = await fetch("/api/catalog/import-degree", {
         method: "POST",
         headers,
-        body: JSON.stringify({ degreeId })
+        body: JSON.stringify({
+          degreeId,
+          roadmapCode: catalogDegreeOptions.find((degree) => degree.id === degreeId)?.roadmapCode ?? degreeId
+        })
       });
       const payload = await res.json();
       if (!res.ok) {
@@ -1423,11 +1633,19 @@ export function SchoolOS() {
         setCatalogDegreeImporting(false);
       }
     }
-  }, [getAuthHeader]);
+  }, [catalogDegreeOptions, getAuthHeader]);
 
   const importFullDegreePlan = useCallback(async () => {
     await loadDegreeRoadmapCourses(catalogDegree, true);
   }, [catalogDegree, loadDegreeRoadmapCourses]);
+
+  const selectCatalogDegreeOption = useCallback((degree: CatalogDegreeOption) => {
+    setCatalogDegree(degree.id);
+    setCatalogDegreeSearchQuery(degree.label);
+    setIsCatalogDegreeOptionsOpen(false);
+    setCatalogQuery("");
+    void loadDegreeRoadmapCourses(degree.id, false);
+  }, [loadDegreeRoadmapCourses]);
 
   useEffect(() => {
     if (!isCatalogPickerOpen) return;
@@ -1467,8 +1685,10 @@ export function SchoolOS() {
 
   const tentativeCalendarOptions = useMemo(() => {
     if (!pendingSessionChoiceFlow || !activeChoiceSet) return [];
-    return activeChoiceSet.options.map((option) => ({
+    return activeChoiceSet.options.map((option, index) => ({
       optionId: option.optionId,
+      optionIndex: index + 1,
+      displayLabel: `Option ${index + 1}`,
       label: option.label,
       courseId: pendingSessionChoiceFlow.courseId,
       courseName: pendingSessionChoiceFlow.courseName,
@@ -1525,7 +1745,7 @@ export function SchoolOS() {
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f7f8fa_0%,#f4f5f7_100%)] text-slate-900 dark:bg-[linear-gradient(180deg,#090b0d_0%,#0d1014_100%)] dark:text-slate-100">
-      <div className="mx-auto grid min-h-[100dvh] max-w-[1560px] grid-cols-1 gap-5 p-5 lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-1">
+      <div className="mx-auto grid h-[100dvh] max-w-[1560px] grid-cols-1 gap-5 overflow-hidden p-5 lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-1">
         <aside className="animate-fadeSlide space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:pr-0.5">
           <Panel className="bg-white/88 dark:bg-[#101317]/90">
             <div className="flex items-start justify-between gap-2">
@@ -1534,7 +1754,7 @@ export function SchoolOS() {
                 <p className="text-sm text-slate-500 dark:text-slate-400">7-course command center</p>
               </div>
               <Button variant="outline" className="h-8 px-2.5 text-xs" onClick={() => setIsSettingsOpen(true)} data-onboarding="settings-button">
-                <Settings className="h-3.5 w-3.5" />
+                <Cog className="h-3.5 w-3.5" />
               </Button>
             </div>
             <div className="mt-5 space-y-1">
@@ -1557,115 +1777,6 @@ export function SchoolOS() {
           </Panel>
 
           <Panel className="bg-white/88 dark:bg-[#101317]/90">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-sm font-semibold tracking-tight">Courses</h3>
-              <div className="relative flex items-center gap-2">
-                <Badge>{activeCourses.length} active</Badge>
-                <Button
-                  variant="outline"
-                  onClick={() => setIsCourseActionsOpen((v) => !v)}
-                  className="h-8 px-3 text-xs"
-                  data-onboarding="courses-add-button"
-                >
-                  <Plus className="mr-1 h-3.5 w-3.5" />
-                  Add
-                </Button>
-                {isCourseActionsOpen && (
-                  <div className="absolute right-0 top-9 z-20 w-40 rounded-xl border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_10px_24px_rgba(15,23,42,0.14)] dark:border-white/10 dark:bg-[#0f1217]/95">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddCourseOpen(true);
-                        setIsCourseActionsOpen(false);
-                      }}
-                      className="w-full rounded-lg px-2.5 py-2 text-left text-xs text-slate-600 transition hover:bg-slate-100/80 dark:text-slate-300 dark:hover:bg-white/[0.06]"
-                    >
-                      Add manually
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsCatalogPickerOpen(true);
-                        setIsCourseActionsOpen(false);
-                      }}
-                      className="w-full rounded-lg px-2.5 py-2 text-left text-xs text-slate-600 transition hover:bg-slate-100/80 dark:text-slate-300 dark:hover:bg-white/[0.06]"
-                    >
-                      Import from HUJI
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="mb-2 grid grid-cols-2 gap-1.5 rounded-xl border border-slate-200/70 bg-slate-50/60 p-1.5 dark:border-white/10 dark:bg-white/[0.03]">
-              <button
-                type="button"
-                onClick={() => setCourseListMode("all")}
-                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "all" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
-              >
-                <p className="text-[11px] font-medium">All</p>
-                <p className="text-[10px] opacity-80">{activeCourses.length}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setCourseListMode("imported")}
-                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "imported" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
-              >
-                <p className="text-[11px] font-medium">Imported</p>
-                <p className="text-[10px] opacity-80">{importedCoursesCount}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setCourseListMode("manual")}
-                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "manual" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
-              >
-                <p className="text-[11px] font-medium">Manual</p>
-                <p className="text-[10px] opacity-80">{manualCoursesCount}</p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setCourseListMode("archived")}
-                className={`rounded-lg px-2 py-1.5 text-left transition ${courseListMode === "archived" ? "bg-white text-slate-900 dark:bg-white/10 dark:text-white" : "text-slate-500 hover:bg-white/60 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
-              >
-                <p className="text-[11px] font-medium">Archived</p>
-                <p className="text-[10px] opacity-80">{archivedCourses.length}</p>
-              </button>
-            </div>
-            <div className="max-h-64 space-y-1.5 overflow-auto pr-1">
-              {visibleCoursesInSidebar.map((course) => {
-                const isActive = state.ui.selectedCourseId === course.id;
-                return (
-                  <div key={course.id} className={`group flex items-center gap-2 rounded-xl px-2 py-1 transition ${isActive ? "bg-slate-900/95 text-white dark:bg-white dark:text-slate-900" : "hover:bg-slate-100/70 dark:hover:bg-white/[0.04]"}`}>
-                    <button
-                      onClick={() => dispatch({ type: "set-course-filter", payload: course.id })}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                    >
-                      <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: course.color }} />
-                      <div className="min-w-0">
-                        <p dir="auto" className="truncate text-sm font-medium text-start">
-                          {course.code ? `${course.code} · ` : ""}{course.name}
-                        </p>
-                        <p className={`truncate text-[11px] ${isActive ? "text-white/75 dark:text-slate-600" : "text-slate-400 dark:text-slate-500"}`}>
-                          {course.source ? "Imported from HUJI" : "Manual course"} · {course.meetings.length} meetings
-                        </p>
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        dispatch({ type: "set-course-filter", payload: course.id });
-                        setIsCourseEditorOpen(true);
-                      }}
-                      className={`rounded-md px-2 py-1 text-[11px] transition ${isActive ? "bg-white/15 text-white dark:bg-slate-200 dark:text-slate-900" : "opacity-0 group-hover:opacity-100 text-slate-500 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-white/10"}`}
-                    >
-                      Edit
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </Panel>
-
-          <Panel className="bg-white/88 dark:bg-[#101317]/90">
             <div className="flex items-center justify-between text-sm">
               <span>Theme</span>
               <div className="flex gap-1">
@@ -1678,8 +1789,8 @@ export function SchoolOS() {
 
         <main
           className={
-            state.ui.activeView === "kanban"
-              ? "animate-fadeSlide flex h-full min-h-0 flex-col gap-5"
+            state.ui.activeView === "kanban" || state.ui.activeView === "calendar"
+              ? "animate-fadeSlide flex h-full min-h-0 flex-col gap-5 overflow-hidden"
               : "animate-fadeSlide space-y-5"
           }
         >
@@ -1794,6 +1905,17 @@ export function SchoolOS() {
               visibleCourseIds={visibleCourseIds}
               onOpenAddSession={handleOpenAddSession}
               onSessionClick={handleCalendarSessionClick}
+              onSessionDoubleClick={handleCalendarSessionDoubleClick}
+              onClearSessionSelection={() => setSelectedCalendarSession(null)}
+              selectedSession={
+                selectedCalendarSession
+                  ? {
+                      courseId: selectedCalendarSession.courseId,
+                      meetingId: selectedCalendarSession.meetingId,
+                      anchorDate: selectedCalendarSession.anchorDate
+                    }
+                  : undefined
+              }
               onUpdateCourse={updateCourseWithUndo}
               onAddWorkBlock={addWorkBlockWithUndo}
               onUpdateWorkBlock={updateWorkBlockWithUndo}
@@ -1803,6 +1925,140 @@ export function SchoolOS() {
               tentativeChoiceTitle={activeChoiceSet?.label}
               onPickTentativeOption={selectTentativeCalendarOption}
             />
+          )}
+          {state.ui.activeView === "courses" && (
+            <Panel className="bg-white/90 dark:bg-[#101317]/90">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-sm font-semibold tracking-tight">Courses</h3>
+                <div className="relative flex items-center gap-2">
+                  <Badge>{activeCourses.length} active</Badge>
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsCourseActionsOpen((v) => !v)}
+                    className="h-8 px-3 text-xs"
+                    data-onboarding="courses-add-button"
+                  >
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    Add
+                  </Button>
+                  {isCourseActionsOpen && (
+                    <div className="absolute right-0 top-9 z-20 w-40 rounded-xl border border-slate-200/80 bg-white/95 p-1.5 shadow-[0_10px_24px_rgba(15,23,42,0.14)] dark:border-white/10 dark:bg-[#0f1217]/95">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsAddCourseOpen(true);
+                          setIsCourseActionsOpen(false);
+                        }}
+                        className="w-full rounded-lg px-2.5 py-2 text-left text-xs text-slate-600 transition hover:bg-slate-100/80 dark:text-slate-300 dark:hover:bg-white/[0.06]"
+                      >
+                        Add manually
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCatalogPickerOpen(true);
+                          setIsCourseActionsOpen(false);
+                        }}
+                        className="w-full rounded-lg px-2.5 py-2 text-left text-xs text-slate-600 transition hover:bg-slate-100/80 dark:text-slate-300 dark:hover:bg-white/[0.06]"
+                      >
+                        Import from HUJI
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCourseListMode("all")}
+                  className={`rounded-full border px-2.5 py-1 text-left transition ${courseListMode === "all" ? "border-slate-300 bg-slate-100 text-slate-900 dark:border-white/20 dark:bg-white/10 dark:text-white" : "border-slate-200/70 text-slate-500 hover:bg-slate-100/70 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
+                >
+                  <p className="text-[11px] font-medium">All <span className="opacity-80">{activeCourses.length}</span></p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCourseListMode("imported")}
+                  className={`rounded-full border px-2.5 py-1 text-left transition ${courseListMode === "imported" ? "border-slate-300 bg-slate-100 text-slate-900 dark:border-white/20 dark:bg-white/10 dark:text-white" : "border-slate-200/70 text-slate-500 hover:bg-slate-100/70 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
+                >
+                  <p className="text-[11px] font-medium">Imported <span className="opacity-80">{importedCoursesCount}</span></p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCourseListMode("manual")}
+                  className={`rounded-full border px-2.5 py-1 text-left transition ${courseListMode === "manual" ? "border-slate-300 bg-slate-100 text-slate-900 dark:border-white/20 dark:bg-white/10 dark:text-white" : "border-slate-200/70 text-slate-500 hover:bg-slate-100/70 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
+                >
+                  <p className="text-[11px] font-medium">Manual <span className="opacity-80">{manualCoursesCount}</span></p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCourseListMode("archived")}
+                  className={`rounded-full border px-2.5 py-1 text-left transition ${courseListMode === "archived" ? "border-slate-300 bg-slate-100 text-slate-900 dark:border-white/20 dark:bg-white/10 dark:text-white" : "border-slate-200/70 text-slate-500 hover:bg-slate-100/70 dark:border-white/10 dark:text-slate-400 dark:hover:bg-white/[0.04]"}`}
+                >
+                  <p className="text-[11px] font-medium">Archived <span className="opacity-80">{archivedCourses.length}</span></p>
+                </button>
+              </div>
+              <div className="max-h-[68vh] space-y-1.5 overflow-auto pr-1">
+                {visibleCoursesInSidebar.map((course) => {
+                  const isActive = state.ui.selectedCourseId === course.id;
+                  return (
+                    <div
+                      key={course.id}
+                      className={`group flex items-center gap-2 rounded-xl border px-2 py-1 transition ${
+                        isActive
+                          ? "border-slate-300/80 bg-transparent dark:border-white/20"
+                          : "border-transparent hover:bg-slate-100/70 dark:hover:bg-white/[0.04]"
+                      }`}
+                    >
+                      <button
+                        onClick={() => {
+                          dispatch({ type: "set-course-filter", payload: course.id });
+                          setIsCourseEditorOpen(true);
+                        }}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      >
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: course.color }} />
+                        <div className="min-w-0">
+                          <p dir="auto" className="truncate text-sm font-medium text-start">
+                            {course.code ? `${course.code} · ` : ""}{course.name}
+                          </p>
+                          <p className="truncate text-[11px] text-slate-400 dark:text-slate-500">
+                            {course.source ? "Imported from HUJI" : "Manual course"} · {course.meetings.length} meetings
+                          </p>
+                        </div>
+                      </button>
+                      <div className={`flex items-center gap-1 transition ${isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                        <button
+                          type="button"
+                          aria-label="Archive course"
+                          onClick={() => {
+                            dispatch({ type: "archive-course", payload: course.id });
+                            dispatch({ type: "set-course-filter", payload: "all" });
+                          }}
+                          className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-white/10"
+                        >
+                          <Archive className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Delete course"
+                          onClick={() => {
+                            const confirmed = window.confirm(
+                              "Delete this course permanently? This will also delete related tasks, work blocks, and class notes."
+                            );
+                            if (!confirmed) return;
+                            dispatch({ type: "delete-course", payload: course.id });
+                            dispatch({ type: "set-course-filter", payload: "all" });
+                          }}
+                          className="rounded-md p-1.5 text-rose-500 transition hover:bg-rose-100/70 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Panel>
           )}
           {state.ui.activeView === "by-course" && <MemoByCourseView tasks={filteredTasks} courses={activeCourses} onToggleDone={toggleTaskDoneWithUndo} onFocus={handleFocusTask} />}
           {state.ui.activeView === "by-priority" && <MemoByPriorityView tasks={filteredTasks} onToggleDone={toggleTaskDoneWithUndo} onFocus={handleFocusTask} />}
@@ -1907,22 +2163,59 @@ export function SchoolOS() {
             <Panel className="bg-white/92 dark:bg-[#101317]/92" data-onboarding="settings-degree-panel">
               <h3 className="mb-2 font-semibold">Degree</h3>
               <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">Choose your degree, load roadmap courses, then quick-add only this semester.</p>
-              <select
-                value={catalogDegree}
-                onChange={(event) => setCatalogDegree(event.target.value as CatalogDegreeId)}
+              <input
+                value={catalogDegreeSearchQuery}
+                onChange={(event) => {
+                  setCatalogDegreeSearchQuery(event.target.value);
+                  setIsCatalogDegreeOptionsOpen(true);
+                }}
+                onFocus={() => setIsCatalogDegreeOptionsOpen(true)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setIsCatalogDegreeOptionsOpen(false);
+                }}
+                placeholder="Search degree (e.g. 181, biology, linguistics)..."
+                data-onboarding="degree-select"
                 className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
+              />
+              {isCatalogDegreeOptionsOpen && catalogDegreeSearchQuery.trim().length > 0 && (
+                <div className="mt-2 max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white/90 p-1 dark:border-white/10 dark:bg-white/[0.03]">
+                  {catalogDegreeOptions.length === 0 ? (
+                    <p className="px-2 py-1 text-xs text-slate-500 dark:text-slate-400">No matching degrees found.</p>
+                  ) : (
+                    catalogDegreeOptions.map((degree) => (
+                      <button
+                        key={degree.id}
+                        type="button"
+                        onClick={() => selectCatalogDegreeOption(degree)}
+                        className={`w-full rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                          catalogDegree === degree.id
+                            ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                            : "text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                        }`}
+                      >
+                        {degree.label}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+              {catalogDegreeSearchLoading && (
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Searching degrees...</p>
+              )}
+              <Button
+                variant="outline"
+                className="mt-3 w-full justify-center"
+                onClick={() => {
+                  setIsCatalogPickerOpen(true);
+                  setIsSettingsOpen(false);
+                }}
               >
-                {CATALOG_DEGREES.map((degree) => (
-                  <option key={degree.id} value={degree.id}>
-                    {degree.label}
-                  </option>
-                ))}
-              </select>
-              <Button variant="outline" className="mt-3 w-full justify-center" onClick={() => setIsCatalogPickerOpen(true)}>
                 Open HUJI import
               </Button>
               <Button className="mt-2 w-full justify-center" onClick={() => void importFullDegreePlan()} disabled={catalogDegreeImporting}>
-                {catalogDegreeImporting ? "Loading roadmap..." : "Load degree roadmap"}
+                {catalogDegreeImporting
+                  ? "Loading roadmap..."
+                  : `Load roadmap${selectedCatalogDegreeOption ? ` (${selectedCatalogDegreeOption.roadmapCode})` : ""}`}
               </Button>
             </Panel>
 
@@ -2018,63 +2311,37 @@ export function SchoolOS() {
         />
       )}
 
-      {sessionHub && sessionHubCourse && sessionHubMeeting && (
-        <div className="fixed inset-0 z-[48] flex items-end justify-center bg-black/45 px-0 pb-0 backdrop-blur-[2px] sm:items-center sm:p-4">
-          <Panel className="w-full max-w-lg animate-fadeSlide rounded-b-none border-b-0 p-5 sm:rounded-[28px] sm:border-b">
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <div className="min-w-0" dir="auto">
-                <h3 className="text-base font-semibold text-slate-900 dark:text-white">Session</h3>
-                <p className="mt-1 text-sm font-medium text-slate-700 dark:text-slate-200">{sessionHubCourse.name}</p>
-                <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-                  {sessionHubMeeting.title?.trim() || formatSessionType(sessionHubMeeting.type)} · {sessionHubMeeting.start}–{sessionHubMeeting.end}
-                </p>
-                <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-                  {sessionHub.anchorDate.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
-                </p>
-              </div>
-              <Button variant="ghost" onClick={() => setSessionHub(null)} className="h-10 w-10 shrink-0 p-0" aria-label="Close">
-                <X className="h-4 w-4" />
-              </Button>
+      {sessionDeletePrompt && (
+        <div className="fixed inset-0 z-[49] flex items-center justify-center bg-black/45 px-4 backdrop-blur-[2px]">
+          <Panel className="w-full max-w-md rounded-[26px] p-5">
+            <div className="mb-2 text-center">
+              <h3 className="text-2xl font-semibold tracking-tight">Delete event?</h3>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                Choose exactly how this recurring session should be removed.
+              </p>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="mt-4 space-y-2">
               <Button
-                className="sm:col-span-2"
+                className="w-full justify-center bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-600"
                 onClick={() => {
-                  openClassNoteDraftForSession(sessionHub.courseId, sessionHub.meetingId, sessionHub.anchorDate);
-                  setSessionHub(null);
+                  deleteSelectedSession("single");
+                  setSessionDeletePrompt(null);
                 }}
               >
-                Take class note
+                Delete Only This Event
               </Button>
               <Button
                 variant="outline"
+                className="w-full justify-center"
                 onClick={() => {
-                  const hub = sessionHub;
-                  setSessionHub(null);
-                  setSessionDraft({ courseId: hub.courseId, meetingId: hub.meetingId, anchorDate: hub.anchorDate });
-                  setIsSessionEditorOpen(true);
+                  deleteSelectedSessionFuture();
+                  setSessionDeletePrompt(null);
                 }}
               >
-                Edit schedule
+                Delete All Future Events
               </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  const occurredOn = formatDateKey(sessionHub.anchorDate);
-                  const k = `${sessionHub.courseId}-${sessionHub.meetingId}-${occurredOn}`;
-                  promptedPostSessionRef.current.add(k);
-                  persistPostSessionPromptDismissedKey(k);
-                  setPostSessionPrompt({
-                    courseId: sessionHub.courseId,
-                    meetingId: sessionHub.meetingId,
-                    occurredOn,
-                    courseName: sessionHubCourse.name,
-                    sessionLabel: sessionHubMeeting.title?.trim() || formatSessionType(sessionHubMeeting.type)
-                  });
-                  setSessionHub(null);
-                }}
-              >
-                End class
+              <Button variant="ghost" className="w-full justify-center" onClick={() => setSessionDeletePrompt(null)}>
+                Cancel
               </Button>
             </div>
           </Panel>
@@ -2239,23 +2506,42 @@ export function SchoolOS() {
             <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-[280px_minmax(0,1fr)_auto] md:items-end">
               <div className="min-w-0">
                 <label className="mb-1 block px-1 text-xs font-medium text-slate-600 dark:text-slate-300">Degree</label>
-                <select
-                  value={catalogDegree}
+                <input
+                  value={catalogDegreeSearchQuery}
                   onChange={(event) => {
-                    const nextDegree = event.target.value as CatalogDegreeId;
-                    setCatalogDegree(nextDegree);
-                    setCatalogQuery("");
-                    void loadDegreeRoadmapCourses(nextDegree, false);
+                    setCatalogDegreeSearchQuery(event.target.value);
+                    setIsCatalogDegreeOptionsOpen(true);
                   }}
+                  onFocus={() => setIsCatalogDegreeOptionsOpen(true)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") setIsCatalogDegreeOptionsOpen(false);
+                  }}
+                  placeholder="Search degree..."
                   data-onboarding="degree-select"
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
-                >
-                  {CATALOG_DEGREES.map((degree) => (
-                    <option key={degree.id} value={degree.id}>
-                      {degree.label}
-                    </option>
-                  ))}
-                </select>
+                />
+                {isCatalogDegreeOptionsOpen && catalogDegreeSearchQuery.trim().length > 0 && (
+                  <div className="mt-2 max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white/90 p-1 dark:border-white/10 dark:bg-white/[0.03]">
+                    {catalogDegreeOptions.length === 0 ? (
+                      <p className="px-2 py-1 text-xs text-slate-500 dark:text-slate-400">No matching degrees found.</p>
+                    ) : (
+                      catalogDegreeOptions.map((degree) => (
+                        <button
+                          key={degree.id}
+                          type="button"
+                          onClick={() => selectCatalogDegreeOption(degree)}
+                          className={`w-full rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                            catalogDegree === degree.id
+                              ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                              : "text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                          }`}
+                        >
+                          {degree.label}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
               <div className="relative min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -2272,7 +2558,7 @@ export function SchoolOS() {
             </div>
 
             <div className="mb-3 rounded-lg border border-slate-200/70 bg-slate-50/60 px-3 py-2 text-xs text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
-              {`Degree catalog: ${CATALOG_DEGREES.find((d) => d.id === catalogDegree)?.label ?? catalogDegree}.`
+              {`Degree catalog: ${selectedCatalogDegreeOption?.label ?? catalogDegree}.`
                 + " "
                 + (catalogFreshness?.lastCompletedAt
                 ? `Catalog updated ${new Date(catalogFreshness.lastCompletedAt).toLocaleString()} (${catalogFreshness.fetchedCount} courses).`
@@ -3056,6 +3342,9 @@ function CalendarView({
   visibleCourseIds,
   onOpenAddSession,
   onSessionClick,
+  onSessionDoubleClick,
+  onClearSessionSelection,
+  selectedSession,
   onUpdateCourse,
   onAddWorkBlock,
   onUpdateWorkBlock,
@@ -3075,6 +3364,9 @@ function CalendarView({
   visibleCourseIds: string[];
   onOpenAddSession: (anchorDate?: Date, start?: string, end?: string) => void;
   onSessionClick: (courseId: string, meetingId: string, anchorDate?: Date) => void;
+  onSessionDoubleClick?: (courseId: string, meetingId: string, anchorDate?: Date) => void;
+  onClearSessionSelection?: () => void;
+  selectedSession?: { courseId: string; meetingId: string; anchorDate: Date };
   onUpdateCourse: (course: Partial<Course> & { id: string }) => void;
   onAddWorkBlock: (block: Omit<WorkBlock, "id" | "createdAt">) => void;
   onUpdateWorkBlock: (block: Partial<WorkBlock> & { id: string }) => void;
@@ -3082,6 +3374,8 @@ function CalendarView({
   onOpenTask: (taskId: string) => void;
   tentativeOptions?: Array<{
     optionId: string;
+    optionIndex: number;
+    displayLabel: string;
     label: string;
     courseId: string;
     courseName: string;
@@ -3126,7 +3420,7 @@ function CalendarView({
     if (!tentativeOptions?.length) return [];
     const pseudoCourses: Course[] = tentativeOptions.map((option) => ({
       id: option.optionId,
-      name: `${option.courseName} (${option.label})`,
+      name: `${option.displayLabel} (${option.label})`,
       code: option.optionId,
       color: option.courseColor,
       archived: false,
@@ -3141,6 +3435,17 @@ function CalendarView({
     return expandMeetingOccurrences(pseudoCourses, rangeStart, rangeEnd);
   }, [rangeEnd, rangeStart, tentativeOptions]);
   const tentativeByDate = useMemo(() => groupOccurrencesByDate(tentativeOccurrences), [tentativeOccurrences]);
+  const tentativeOptionSummary = useMemo(() => {
+    if (!tentativeOptions?.length) return null;
+    const counts = tentativeOptions.map((opt) => opt.meetings.length).filter((count) => Number.isFinite(count));
+    const minBlocks = counts.length > 0 ? Math.min(...counts) : 0;
+    const maxBlocks = counts.length > 0 ? Math.max(...counts) : 0;
+    return {
+      optionCount: tentativeOptions.length,
+      minBlocks,
+      maxBlocks
+    };
+  }, [tentativeOptions]);
   const sessionByDate = groupOccurrencesByDate(sessionOccurrences);
   const taskByDay = useMemo(() => {
     return tasks.reduce<Record<string, Task[]>>((acc, task) => {
@@ -3188,7 +3493,13 @@ function CalendarView({
       tasks: taskByDay[key] ?? []
     };
   });
-  const currentTimeTopWeek = getCurrentTimePosition(today, timelineHours[0], timelineHours[timelineHours.length - 1] + 1);
+  const WEEK_TIMELINE_ROW_PX = 64;
+  const currentTimeTopWeek = getCurrentTimePosition(
+    today,
+    timelineHours[0],
+    timelineHours[timelineHours.length - 1] + 1,
+    WEEK_TIMELINE_ROW_PX
+  );
   const currentTimeTopDay = getCurrentTimePosition(today, timelineHours[0], timelineHours[timelineHours.length - 1] + 1, dayHourHeight);
   const [draggingSession, setDraggingSession] = useState<{
     courseId: string;
@@ -3198,7 +3509,7 @@ function CalendarView({
     sourceDate: Date;
   } | null>(null);
   const [dragPreview, setDragPreview] = useState<{ date: Date; startMinutes: number; endMinutes: number } | null>(null);
-  const [creatingSession, setCreatingSession] = useState<{ date: Date; startMinutes: number; endMinutes: number } | null>(null);
+  const [creatingSession, setCreatingSession] = useState<{ date: Date; startMinutes: number; endMinutes: number; hasDragged: boolean } | null>(null);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [taskDropPreview, setTaskDropPreview] = useState<{ startMinutes: number; endMinutes: number } | null>(null);
   const [draggingWorkBlock, setDraggingWorkBlock] = useState<{ id: string; durationMinutes: number } | null>(null);
@@ -3241,11 +3552,27 @@ function CalendarView({
   const [dayTransition, setDayTransition] = useState<{ direction: "prev" | "next"; fromDate: Date; toDate: Date } | null>(null);
   const [dayTransitionActive, setDayTransitionActive] = useState(false);
   const [hoveredTentativeOptionId, setHoveredTentativeOptionId] = useState<string | null>(null);
+  const [quickCreateDraft, setQuickCreateDraft] = useState<{
+    mode: "create" | "edit";
+    date: Date;
+    start: string;
+    end: string;
+    courseId: string;
+    meetingId?: string;
+    isAllDay: boolean;
+    title: string;
+    location: string;
+    cadence: SessionCadence;
+    repeatDays: WeekDay[];
+    detailsOpen: boolean;
+  } | null>(null);
+  const [quickCreateAnchor, setQuickCreateAnchor] = useState<{ left: number; top: number } | null>(null);
+  const weekGridBodyRef = useRef<HTMLDivElement | null>(null);
+  const dayGridBodyRef = useRef<HTMLDivElement | null>(null);
   const dayTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const calendarScrollTopRef = useRef<number | null>(null);
   const syncedCalendarScrollElsRef = useRef<WeakSet<Element>>(new WeakSet());
-  /** Week grid uses `h-20` (80px) per hour in the time gutter. */
-  const WEEK_TIMELINE_ROW_PX = 80;
+  /** Week grid hour row height, tuned to show more daytime hours at once. */
   const weekWbInteractionRef = useRef<{
     dragPreview: { id: string; startMinutes: number; endMinutes: number; dateKey?: string } | null;
     resizePreview: { id: string; startMinutes: number; endMinutes: number; dateKey?: string } | null;
@@ -3421,27 +3748,128 @@ function CalendarView({
 
   function startCreateSession(date: Date, clientY: number, bounds: DOMRect, hourHeight = 80) {
     const startMinutes = minutesFromPointer(clientY, bounds, hourHeight);
-    setCreatingSession({ date, startMinutes, endMinutes: startMinutes + 60 });
+    setCreatingSession({ date, startMinutes, endMinutes: startMinutes + 60, hasDragged: false });
   }
 
   function updateCreateSession(clientY: number, bounds: DOMRect, hourHeight = 80) {
     setCreatingSession((current) => {
       if (!current) return current;
       const nextMinutes = minutesFromPointer(clientY, bounds, hourHeight);
+      // Strict drag-only creation: ignore zero-distance updates from simple clicks.
+      if (nextMinutes === current.startMinutes) {
+        return current;
+      }
       const lower = Math.min(current.startMinutes, nextMinutes);
       const upper = Math.max(current.startMinutes, nextMinutes + 15);
       return {
         ...current,
         startMinutes: lower,
-        endMinutes: upper
+        endMinutes: upper,
+        hasDragged: true
       };
     });
   }
 
   function finishCreateSession() {
     if (!creatingSession) return;
-    onOpenAddSession(creatingSession.date, formatHourMinutes(creatingSession.startMinutes), formatHourMinutes(creatingSession.endMinutes));
+    if (!creatingSession.hasDragged) {
+      setCreatingSession(null);
+      return;
+    }
+    const start = formatHourMinutes(creatingSession.startMinutes);
+    const end = formatHourMinutes(creatingSession.endMinutes);
+    const defaultCourseId = visibleCourses[0]?.id ?? courses[0]?.id ?? "";
+    setQuickCreateDraft({
+      mode: "create",
+      date: creatingSession.date,
+      start,
+      end,
+      courseId: defaultCourseId,
+      title: "",
+      location: "",
+      isAllDay: false,
+      cadence: "none",
+      repeatDays: [getWeekDayFromDate(creatingSession.date)],
+      detailsOpen: false
+    });
+    const topPx = ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * (mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight);
+    const popoverWidth = 300;
+    if (mode === "week" && weekGridBodyRef.current) {
+      const rect = weekGridBodyRef.current.getBoundingClientRect();
+      const gutter = 64;
+      const colWidth = Math.max(1, (rect.width - gutter) / 7);
+      const dayIndex = weekDates.findIndex((d) => sameCalendarDate(d, creatingSession.date));
+      const safeDayIndex = Math.max(0, dayIndex);
+      const colLeft = rect.left + gutter + safeDayIndex * colWidth;
+      // Keep the quick bubble visually attached to the created block (inside the same day column).
+      const inColumnPreferred = colLeft + 3;
+      const inColumnFallback = colLeft + colWidth - popoverWidth - 3;
+      const left = colWidth >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+      setQuickCreateAnchor({
+        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
+        top: Math.max(96, rect.top + topPx + 2)
+      });
+    } else if (mode === "day" && dayGridBodyRef.current) {
+      const rect = dayGridBodyRef.current.getBoundingClientRect();
+      const inColumnPreferred = rect.left + 3;
+      const inColumnFallback = rect.right - popoverWidth - 3;
+      const left = rect.width >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+      setQuickCreateAnchor({
+        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
+        top: Math.max(96, rect.top + topPx + 2)
+      });
+    } else {
+      setQuickCreateAnchor({ left: window.innerWidth - 380, top: 140 });
+    }
     setCreatingSession(null);
+  }
+
+  function openQuickEditorForSession(course: Course, meeting: CourseMeeting, anchorDate: Date) {
+    const recurrence = meeting.recurrence;
+    const cadence: SessionCadence = recurrence?.cadence === "weekly" ? "weekly" : "none";
+    const startMinutes = parseTimeValue(meeting.start) * 60;
+    setQuickCreateDraft({
+      mode: "edit",
+      date: anchorDate,
+      start: meeting.start,
+      end: meeting.end,
+      courseId: course.id,
+      meetingId: meeting.id,
+      isAllDay: Boolean(meeting.isAllDay),
+      title: meeting.title ?? "",
+      location: meeting.location ?? "",
+      cadence,
+      repeatDays: recurrence?.daysOfWeek?.length ? recurrence.daysOfWeek : [meeting.day],
+      detailsOpen: false
+    });
+    const popoverWidth = 300;
+    const topPx = ((startMinutes - timelineHours[0] * 60) / 60) * (mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight);
+    if (mode === "week" && weekGridBodyRef.current) {
+      const rect = weekGridBodyRef.current.getBoundingClientRect();
+      const gutter = 64;
+      const colWidth = Math.max(1, (rect.width - gutter) / 7);
+      const dayIndex = weekDates.findIndex((d) => sameCalendarDate(d, anchorDate));
+      const safeDayIndex = Math.max(0, dayIndex);
+      const colLeft = rect.left + gutter + safeDayIndex * colWidth;
+      const inColumnPreferred = colLeft + 3;
+      const inColumnFallback = colLeft + colWidth - popoverWidth - 3;
+      const left = colWidth >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+      setQuickCreateAnchor({
+        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
+        top: Math.max(96, rect.top + topPx + 2)
+      });
+    } else if (mode === "day" && dayGridBodyRef.current) {
+      const rect = dayGridBodyRef.current.getBoundingClientRect();
+      const inColumnPreferred = rect.left + 3;
+      const inColumnFallback = rect.right - popoverWidth - 3;
+      const left = rect.width >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+      setQuickCreateAnchor({
+        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
+        top: Math.max(96, rect.top + topPx + 2)
+      });
+    } else {
+      setQuickCreateAnchor({ left: window.innerWidth - 360, top: 140 });
+    }
   }
 
   function minutesFromIso(iso: string): number {
@@ -3498,7 +3926,7 @@ function CalendarView({
   useEffect(() => {
     if (mode !== "week") return;
     if (!draggingWorkBlock && !resizingWorkBlock) return;
-    const hourHeight = 80;
+    const hourHeight = WEEK_TIMELINE_ROW_PX;
 
     function columnEl(dateKey: string): HTMLElement | null {
       return document.querySelector(`[data-week-column="${dateKey}"]`);
@@ -3689,14 +4117,13 @@ function CalendarView({
   }, [taskByDay, visibleCourses, weekTransition]);
 
   const calendarTitle = mode === "day" ? "Daily" : "Calendar";
-  const calendarSubtitle = mode === "day" ? "where the real work happenes." : "Tasks and course sessions in one place.";
 
   function renderWeekGrid(
     weekData: Array<{ date: Date; key: string; sessions: SessionOccurrence[]; tasks: Task[] }>,
     selectedDayForHeader: Date
   ) {
     return (
-      <div className="overflow-hidden rounded-[28px] border border-slate-200/80 dark:border-white/10">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200/80 dark:border-white/10">
         <div className="grid grid-cols-[64px_repeat(7,minmax(0,1fr))] border-b border-slate-200/80 bg-slate-50/70 dark:border-white/10 dark:bg-white/[0.03]">
           <div className="px-3 pt-2.5 pb-2">
             <p className="whitespace-nowrap text-[21px] leading-none tracking-[-0.02em] text-slate-900 dark:text-slate-100">
@@ -3739,9 +4166,9 @@ function CalendarView({
           ))}
         </div>
         <div className="grid grid-cols-[64px_repeat(7,minmax(0,1fr))] border-b border-slate-200/80 bg-slate-50/70 dark:border-white/10 dark:bg-white/[0.03]">
-          <div className="min-h-[36px] border-r border-slate-200/70 dark:border-white/10" aria-hidden />
+          <div className="min-h-[22px] border-r border-slate-200/70 dark:border-white/10" aria-hidden />
           {weekData.map(({ key, sessions }) => (
-            <div key={`pinned-all-day-${key}`} className="space-y-1 border-r border-slate-200/70 px-2 py-2 dark:border-white/10">
+            <div key={`pinned-all-day-${key}`} className="space-y-0.5 border-r border-slate-200/70 px-1.5 py-0.5 dark:border-white/10">
               {sessions
                 .filter((item) => item.meeting.isAllDay)
                 .map((session) => (
@@ -3750,7 +4177,7 @@ function CalendarView({
                     type="button"
                     onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
                     dir="auto"
-                    className="w-full rounded-xl px-2.5 py-1.5 text-start text-xs font-semibold text-slate-900 shadow-[0_8px_20px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_20px_rgba(0,0,0,0.25)]"
+                    className="w-full rounded-lg px-2 py-px text-start text-[10px] font-medium leading-tight text-slate-900 shadow-[0_4px_10px_rgba(15,23,42,0.08)] dark:shadow-[0_4px_10px_rgba(0,0,0,0.24)]"
                     style={softCourseStyle(session.course.color)}
                   >
                     {session.meeting.title?.trim() || session.course.name}
@@ -3761,9 +4188,9 @@ function CalendarView({
                   key={h.id}
                   dir="auto"
                   title={h.label}
-                  className={`flex w-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold leading-snug ${hebcalPillClasses(h.subcat)}`}
+                  className={`flex w-full items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold leading-tight ${hebcalPillClasses(h.subcat)}`}
                 >
-                  <Star className="h-3.5 w-3.5 shrink-0 fill-current opacity-90" aria-hidden />
+                  <Star className="h-3 w-3 shrink-0 fill-current opacity-90" aria-hidden />
                   <span className="min-w-0 flex-1 truncate">{h.label}</span>
                 </div>
               ))}
@@ -3776,12 +4203,12 @@ function CalendarView({
             const el = event.currentTarget;
             calendarScrollTopRef.current = el.scrollTop;
           }}
-          className="calendar-scroll-area max-h-[72vh] overflow-auto calendar-scroll-area-active"
+          className="calendar-scroll-area min-h-0 flex-1 overflow-auto calendar-scroll-area-active"
         >
-          <div className="relative grid grid-cols-[64px_repeat(7,minmax(0,1fr))]">
+          <div ref={weekGridBodyRef} className="relative grid grid-cols-[64px_repeat(7,minmax(0,1fr))]">
             <div className="border-r border-slate-200/80 dark:border-white/10">
               {timelineHours.map((hour) => (
-                <div key={hour} className="h-20 border-b border-slate-200/70 px-3 py-2 text-xs text-slate-400 dark:border-white/10">
+                <div key={hour} className="border-b border-slate-200/70 px-3 py-2 text-xs text-slate-400 dark:border-white/10" style={{ height: `${WEEK_TIMELINE_ROW_PX}px` }}>
                   {String(hour).padStart(2, "0")}:00
                 </div>
               ))}
@@ -3800,12 +4227,13 @@ function CalendarView({
                     if (event.button !== 0 || draggingSession || draggingWorkBlock || resizingWorkBlock) return;
                     const target = event.target as HTMLElement;
                     if (target.closest("button")) return;
-                    startCreateSession(date, event.clientY, event.currentTarget.getBoundingClientRect());
+                    onClearSessionSelection?.();
+                    startCreateSession(date, event.clientY, event.currentTarget.getBoundingClientRect(), WEEK_TIMELINE_ROW_PX);
                   }}
                   onMouseMove={(event) => {
                     if (draggingWorkBlock || resizingWorkBlock) return;
                     if (!creatingSession || !sameCalendarDate(creatingSession.date, date)) return;
-                    updateCreateSession(event.clientY, event.currentTarget.getBoundingClientRect());
+                    updateCreateSession(event.clientY, event.currentTarget.getBoundingClientRect(), WEEK_TIMELINE_ROW_PX);
                   }}
                   onMouseUp={() => {
                     if (draggingWorkBlock || resizingWorkBlock) return;
@@ -3871,23 +4299,36 @@ function CalendarView({
                   }}
                 >
                   {timelineHours.map((hour) => (
-                    <div key={`${key}-${hour}`} className="h-20 border-b border-slate-200/70 dark:border-white/10" />
+                    <div key={`${key}-${hour}`} className="border-b border-slate-200/70 dark:border-white/10" style={{ height: `${WEEK_TIMELINE_ROW_PX}px` }} />
                   ))}
-                  {creatingSession && sameCalendarDate(creatingSession.date, date) && (
+                  {creatingSession && creatingSession.hasDragged && sameCalendarDate(creatingSession.date, date) && (
                     <div
                       className="pointer-events-none absolute left-[6px] right-[6px] rounded-2xl border-2 border-dashed border-sky-400/70 bg-sky-100/45"
                       style={{
-                        top: ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * 80,
-                        height: Math.max(20, ((creatingSession.endMinutes - creatingSession.startMinutes) / 60) * 80)
+                        top: ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX,
+                        height: Math.max(20, ((creatingSession.endMinutes - creatingSession.startMinutes) / 60) * WEEK_TIMELINE_ROW_PX)
                       }}
                     />
+                  )}
+                  {quickCreateDraft && sameCalendarDate(quickCreateDraft.date, date) && (
+                    <div
+                      className="pointer-events-none absolute left-[6px] right-[6px] rounded-2xl border border-sky-400/60 bg-sky-100/50"
+                      style={{
+                        top: ((parseTimeValue(quickCreateDraft.start) - timelineHours[0]) * WEEK_TIMELINE_ROW_PX),
+                        height: Math.max(20, (parseTimeValue(quickCreateDraft.end) - parseTimeValue(quickCreateDraft.start)) * WEEK_TIMELINE_ROW_PX)
+                      }}
+                    >
+                      <div className="px-2 py-1 text-[11px] font-medium text-sky-900/80 dark:text-sky-100/80">
+                        {quickCreateDraft.title.trim() || "New Session"}
+                      </div>
+                    </div>
                   )}
                   {dragPreview && sameCalendarDate(dragPreview.date, date) && (
                     <div
                       className="pointer-events-none absolute left-[6px] right-[6px] z-20 rounded-2xl border-2 border-dashed border-violet-500/60 bg-violet-100/40"
                       style={{
-                        top: ((dragPreview.startMinutes - timelineHours[0] * 60) / 60) * 80,
-                        height: Math.max(28, ((dragPreview.endMinutes - dragPreview.startMinutes) / 60) * 80)
+                        top: ((dragPreview.startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX,
+                        height: Math.max(28, ((dragPreview.endMinutes - dragPreview.startMinutes) / 60) * WEEK_TIMELINE_ROW_PX)
                       }}
                     >
                       <div className="absolute left-2 top-2 rounded-md bg-white/90 px-2 py-0.5 text-[11px] font-medium text-violet-700 shadow-sm">
@@ -3898,8 +4339,10 @@ function CalendarView({
                   {timed.map((session) => {
                     const startHour = parseTimeValue(session.meeting.start);
                     const endHour = parseTimeValue(session.meeting.end);
-                    const top = Math.max(0, (startHour - timelineHours[0]) * 80);
-                    const height = Math.max(28, (endHour - startHour) * 80);
+                    const top = Math.max(0, (startHour - timelineHours[0]) * WEEK_TIMELINE_ROW_PX);
+                    const height = Math.max(28, (endHour - startHour) * WEEK_TIMELINE_ROW_PX);
+                    const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
+                    const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
                     return (
                       <button
                         type="button"
@@ -3924,22 +4367,42 @@ function CalendarView({
                           setDragPreview(null);
                         }}
                         onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
+                        onDoubleClick={() => {
+                          onSessionDoubleClick?.(session.course.id, session.meeting.id!, session.date);
+                          openQuickEditorForSession(session.course, session.meeting, session.date);
+                        }}
                         dir="auto"
                         className="absolute overflow-hidden rounded-2xl border px-3 py-2 text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity"
                         style={{
                           ...softCourseStyle(session.course.color),
                           top,
                           height,
-                          borderColor: `${session.course.color}50`,
-                          left: `calc(${(session.column / session.totalColumns) * 100}% + 6px)`,
-                          width: `calc(${100 / session.totalColumns}% - 12px)`,
-                          opacity: hoveredTentativeOptionId ? 0.22 : 1
+                          borderColor:
+                            selectedSession?.courseId === session.course.id &&
+                            selectedSession?.meetingId === session.meeting.id &&
+                            sameCalendarDate(selectedSession.anchorDate, session.date)
+                              ? "rgba(250,204,21,0.72)"
+                              : `${session.course.color}50`,
+                          left: `calc(${session.column * overlapStepPct}% + 6px)`,
+                          width: `calc(${overlapWidthPct}% - 12px)`,
+                          opacity: hoveredTentativeOptionId ? 0.22 : 1,
+                          zIndex: 10 + session.column,
+                          boxShadow:
+                            selectedSession?.courseId === session.course.id &&
+                            selectedSession?.meetingId === session.meeting.id &&
+                            sameCalendarDate(selectedSession.anchorDate, session.date)
+                              ? "0 0 0 1px rgba(250,204,21,0.55), 0 0 14px rgba(250,204,21,0.20), 0 10px 24px rgba(15,23,42,0.08)"
+                              : undefined
                         }}
                       >
                         <p className="truncate font-semibold text-slate-900 dark:text-white">{session.course.name}</p>
                         <p className="truncate text-slate-700 dark:text-white/95">{session.meeting.title || formatSessionType(session.meeting.type)}</p>
                         <p className="mt-1 text-[11px] text-slate-600 dark:text-white/90">{session.meeting.start} - {session.meeting.end}</p>
-                        {session.meeting.location && <p className="truncate text-[11px] text-slate-600 dark:text-white/90">{session.meeting.location}</p>}
+                        {session.meeting.location && (
+                          <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-slate-600 dark:text-white/90">
+                            {session.meeting.location}
+                          </p>
+                        )}
                       </button>
                     );
                   })}
@@ -3948,8 +4411,8 @@ function CalendarView({
                     .map((session) => {
                       const startHour = parseTimeValue(session.meeting.start);
                       const endHour = parseTimeValue(session.meeting.end);
-                      const top = Math.max(0, (startHour - timelineHours[0]) * 80);
-                      const height = Math.max(28, (endHour - startHour) * 80);
+                      const top = Math.max(0, (startHour - timelineHours[0]) * WEEK_TIMELINE_ROW_PX);
+                      const height = Math.max(28, (endHour - startHour) * WEEK_TIMELINE_ROW_PX);
                       return (
                         <button
                           key={`tentative-${session.instanceKey}`}
@@ -3968,7 +4431,9 @@ function CalendarView({
                           <p className="truncate font-semibold text-amber-900 dark:text-amber-100">Tentative: {session.course.name}</p>
                           <p className="mt-1 text-[11px] text-amber-800 dark:text-amber-200">{session.meeting.start} - {session.meeting.end}</p>
                           {session.meeting.location && (
-                            <p className="truncate text-[11px] text-amber-800 dark:text-amber-200">{session.meeting.location}</p>
+                            <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-amber-800 dark:text-amber-200">
+                              {session.meeting.location}
+                            </p>
                           )}
                           {hoveredTentativeOptionId === session.course.id && (
                             <div className="mt-2 rounded-lg bg-white/75 p-2 text-[11px] text-amber-950 dark:bg-black/30 dark:text-amber-100">
@@ -3991,8 +4456,8 @@ function CalendarView({
                     const blockEndMinutes = minutesFromIso(block.endAt);
                     const startM = resizeP ? resizeP.startMinutes : dragP ? dragP.startMinutes : blockStartMinutes;
                     const endM = resizeP ? resizeP.endMinutes : dragP ? dragP.endMinutes : blockEndMinutes;
-                    const top = Math.max(0, ((startM - timelineHours[0] * 60) / 60) * 80);
-                    const height = Math.max(28, ((endM - startM) / 60) * 80);
+                    const top = Math.max(0, ((startM - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
+                    const height = Math.max(28, ((endM - startM) / 60) * WEEK_TIMELINE_ROW_PX);
                     const isCompactBlock = height < 68;
                     const course = courseMap[block.courseId as string];
                     const linkedTask = tasks.find((task) => task.id === block.taskId);
@@ -4088,8 +4553,8 @@ function CalendarView({
                     if (!block) return null;
                     const srcKey = formatDateKey(new Date(block.startAt));
                     if (srcKey === key) return null;
-                    const top = Math.max(0, ((p.startMinutes - timelineHours[0] * 60) / 60) * 80);
-                    const height = Math.max(28, ((p.endMinutes - p.startMinutes) / 60) * 80);
+                    const top = Math.max(0, ((p.startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
+                    const height = Math.max(28, ((p.endMinutes - p.startMinutes) / 60) * WEEK_TIMELINE_ROW_PX);
                     const course = courseMap[block.courseId as string];
                     const linkedTask = tasks.find((task) => task.id === block.taskId);
                     const color = block.colorSnapshot ?? course?.color ?? "#10b981";
@@ -4112,8 +4577,8 @@ function CalendarView({
                     );
                   })()}
                   {sameCalendarDate(date, today) && currentTimeTopWeek !== null && (
-                    <div className="pointer-events-none absolute left-0 right-0 z-10" style={{ top: currentTimeTopWeek }}>
-                      <div className="h-px bg-rose-400/70" />
+                    <div className="pointer-events-none absolute left-0 right-0 z-20" style={{ top: currentTimeTopWeek }}>
+                      <div className="h-px bg-rose-400/80 shadow-[0_0_8px_rgba(251,113,133,0.6)]" />
                     </div>
                   )}
                 </div>
@@ -4126,41 +4591,63 @@ function CalendarView({
   }
 
   return (
-    <Panel className="bg-white/90 dark:bg-[#101317]/90">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h3 className="font-semibold">{calendarTitle}</h3>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{calendarSubtitle}</p>
+    <Panel className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white/90 dark:bg-[#101317]/90">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold">{calendarTitle}</h3>
           {tentativeOptions && tentativeOptions.length > 0 && (
-            <p className="mt-2 text-xs font-medium text-amber-600 dark:text-amber-300">
-              Choose one option for {tentativeChoiceTitle ?? "session group"} by clicking a glowing tentative block.
+            <p className="mt-1 truncate text-[11px] text-amber-600/95 dark:text-amber-200/95">
+              Choose 1 of {tentativeOptionSummary?.optionCount ?? tentativeOptions.length} for {tentativeChoiceTitle ?? "session group"}
+              {tentativeOptionSummary
+                ? ` · ${tentativeOptionSummary.minBlocks === tentativeOptionSummary.maxBlocks
+                  ? `${tentativeOptionSummary.minBlocks} weekly block${tentativeOptionSummary.minBlocks === 1 ? "" : "s"} each`
+                  : "multiple weekly blocks"}`
+                : ""}
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 px-1 py-1 dark:border-white/10 dark:bg-white/[0.03]">
-            <Button variant="ghost" onClick={() => navigate("prev")} className="h-9 w-9 rounded-full p-0"><ChevronLeft className="h-4 w-4" /></Button>
-            <Button variant="ghost" onClick={() => onSelectDate(new Date())} className="rounded-full px-3 text-sm">Today</Button>
-            <Button variant="ghost" onClick={() => navigate("next")} className="h-9 w-9 rounded-full p-0"><ChevronRight className="h-4 w-4" /></Button>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
+            <Button
+              variant="ghost"
+              onClick={() => navigate("prev")}
+              className="h-7 min-w-7 rounded-full px-1 text-[14px] font-semibold leading-none text-slate-700 hover:bg-slate-200/70 dark:text-slate-100 dark:hover:bg-white/[0.08]"
+              aria-label="Previous period"
+            >
+              <span aria-hidden>‹</span>
+            </Button>
+            <Button variant="ghost" onClick={() => onSelectDate(new Date())} className="h-7 rounded-full px-2.5 text-xs">Today</Button>
+            <Button
+              variant="ghost"
+              onClick={() => navigate("next")}
+              className="h-7 min-w-7 rounded-full px-1 text-[14px] font-semibold leading-none text-slate-700 hover:bg-slate-200/70 dark:text-slate-100 dark:hover:bg-white/[0.08]"
+              aria-label="Next period"
+            >
+              <span aria-hidden>›</span>
+            </Button>
           </div>
           <input
             type="date"
             value={formatDateKey(selectedDate)}
             onChange={(event) => onSelectDate(new Date(`${event.target.value}T12:00:00`))}
-            className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]"
+            className="h-8 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs outline-none dark:border-white/10 dark:bg-white/[0.04]"
           />
-          <Button variant="outline" onClick={() => onOpenAddSession(selectedDate)}>Add</Button>
-          <Button variant={mode === "month" ? "primary" : "outline"} onClick={() => onMode("month")}>Month</Button>
-          <Button variant={mode === "week" ? "primary" : "outline"} onClick={() => onMode("week")}>Week</Button>
-          <Button
-            variant={mode === "day" ? "primary" : "outline"}
-            onClick={() => onMode("day")}
-            data-onboarding="calendar-day-button"
-          >
-            Day
-          </Button>
+          <Button variant="outline" onClick={() => onOpenAddSession(selectedDate)} className="h-8 rounded-full px-2.5 text-xs">Add</Button>
+          <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
+            <Button variant={mode === "month" ? "primary" : "ghost"} onClick={() => onMode("month")} className="h-7 rounded-full px-2.5 text-xs">Month</Button>
+            <Button variant={mode === "week" ? "primary" : "ghost"} onClick={() => onMode("week")} className="h-7 rounded-full px-2.5 text-xs">Week</Button>
+            <Button
+              variant={mode === "day" ? "primary" : "ghost"}
+              onClick={() => onMode("day")}
+              data-onboarding="calendar-day-button"
+              className="h-7 rounded-full px-2.5 text-xs"
+            >
+              Day
+            </Button>
+          </div>
         </div>
       </div>
+      <div className="min-h-0 flex-1">
       {mode === "month" ? (
         <>
           <div className="grid grid-cols-7 gap-2 text-xs text-slate-500">
@@ -4213,9 +4700,9 @@ function CalendarView({
         </>
       ) : mode === "week" ? (
         weekTransition ? (
-          <div className="overflow-hidden rounded-[28px] border border-slate-200/80 dark:border-white/10">
+          <div className="h-full min-h-0 overflow-hidden rounded-[28px] border border-slate-200/80 dark:border-white/10">
             <div
-              className="flex"
+              className="flex h-full min-h-0"
               style={{
                 transition: weekTransitionActive
                   ? "transform 420ms cubic-bezier(0.22, 1, 0.36, 1)"
@@ -4228,13 +4715,13 @@ function CalendarView({
             >
               {weekTransition.direction === "next" ? (
                 <>
-                  <div className="w-full shrink-0">{renderWeekGrid(weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate), weekTransition.fromDate)}</div>
-                  <div className="w-full shrink-0">{renderWeekGrid(weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate), weekTransition.toDate)}</div>
+                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate), weekTransition.fromDate)}</div>
+                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate), weekTransition.toDate)}</div>
                 </>
               ) : (
                 <>
-                  <div className="w-full shrink-0">{renderWeekGrid(weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate), weekTransition.toDate)}</div>
-                  <div className="w-full shrink-0">{renderWeekGrid(weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate), weekTransition.fromDate)}</div>
+                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate), weekTransition.toDate)}</div>
+                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate), weekTransition.fromDate)}</div>
                 </>
               )}
             </div>
@@ -4245,7 +4732,7 @@ function CalendarView({
       ) : (
         <div className="grid gap-4 xl:grid-cols-[1.25fr_0.9fr]">
           <div
-            className="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/60 dark:border-white/10 dark:bg-white/[0.02]"
+            className="flex min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/60 dark:border-white/10 dark:bg-white/[0.02]"
             style={
               dayTransition
                 ? {
@@ -4267,14 +4754,14 @@ function CalendarView({
               {hebcalHolidayFetchBusy ? (
                 <p className="mb-2 text-[10px] text-slate-400 dark:text-slate-500">Loading holidays…</p>
               ) : null}
-              <div className="flex min-h-[36px] flex-col gap-1">
+              <div className="flex min-h-[22px] flex-col gap-0.5">
                 {selectedDaySessions.filter((item) => item.meeting.isAllDay).map((session) => (
                   <button
                     key={session.instanceKey}
                     type="button"
                     onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
                     dir="auto"
-                    className="w-full rounded-2xl px-3 py-2 text-start text-sm font-medium text-slate-900"
+                    className="w-full rounded-lg px-2 py-0.5 text-start text-[10px] font-medium leading-tight text-slate-900"
                     style={softCourseStyle(session.course.color)}
                   >
                     {session.meeting.title?.trim() || session.course.name}
@@ -4285,7 +4772,7 @@ function CalendarView({
                     key={h.id}
                     dir="auto"
                     title={h.label}
-                    className={`flex w-full items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold leading-tight ${hebcalPillClasses(h.subcat)}`}
+                    className={`flex w-full items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold leading-tight ${hebcalPillClasses(h.subcat)}`}
                   >
                     <Star className="h-3 w-3 shrink-0 fill-current opacity-90" aria-hidden />
                     <span className="min-w-0 flex-1 truncate">{h.label}</span>
@@ -4299,9 +4786,9 @@ function CalendarView({
                 const el = event.currentTarget;
                 calendarScrollTopRef.current = el.scrollTop;
               }}
-              className="calendar-scroll-area max-h-[72vh] overflow-auto calendar-scroll-area-active"
+              className="calendar-scroll-area min-h-0 flex-1 overflow-auto calendar-scroll-area-active"
             >
-              <div className="relative grid grid-cols-[72px_minmax(0,1fr)]">
+              <div ref={dayGridBodyRef} className="relative grid grid-cols-[72px_minmax(0,1fr)]">
                 <div className="border-r border-slate-200/80 dark:border-white/10">
                   {timelineHours.map((hour) => (
                     <div key={hour} className="border-b border-slate-200/70 px-3 py-2 text-xs text-slate-400 dark:border-white/10" style={{ height: `${dayHourHeight}px` }}>
@@ -4315,6 +4802,7 @@ function CalendarView({
                     if (event.button !== 0 || draggingSession) return;
                     const target = event.target as HTMLElement;
                     if (target.closest("button")) return;
+                    onClearSessionSelection?.();
                     startCreateSession(selectedDate, event.clientY, event.currentTarget.getBoundingClientRect(), dayHourHeight);
                   }}
                   onMouseMove={(event) => {
@@ -4498,7 +4986,7 @@ function CalendarView({
                   {timelineHours.map((hour) => (
                     <div key={hour} className="border-b border-slate-200/70 dark:border-white/10" style={{ height: `${dayHourHeight}px` }} />
                   ))}
-                  {creatingSession && sameCalendarDate(creatingSession.date, selectedDate) && (
+                  {creatingSession && creatingSession.hasDragged && sameCalendarDate(creatingSession.date, selectedDate) && (
                     <div
                       className="pointer-events-none absolute left-[8px] right-[8px] rounded-[18px] border-2 border-dashed border-sky-400/70 bg-sky-100/45"
                       style={{
@@ -4506,6 +4994,19 @@ function CalendarView({
                         height: Math.max(20, ((creatingSession.endMinutes - creatingSession.startMinutes) / 60) * dayHourHeight)
                       }}
                     />
+                  )}
+                  {quickCreateDraft && sameCalendarDate(quickCreateDraft.date, selectedDate) && (
+                    <div
+                      className="pointer-events-none absolute left-[8px] right-[8px] rounded-[18px] border border-sky-400/60 bg-sky-100/50"
+                      style={{
+                        top: ((parseTimeValue(quickCreateDraft.start) - timelineHours[0]) * dayHourHeight),
+                        height: Math.max(20, (parseTimeValue(quickCreateDraft.end) - parseTimeValue(quickCreateDraft.start)) * dayHourHeight)
+                      }}
+                    >
+                      <div className="px-2 py-1 text-[11px] font-medium text-sky-900/80 dark:text-sky-100/80">
+                        {quickCreateDraft.title.trim() || "New Session"}
+                      </div>
+                    </div>
                   )}
                   {dragPreview && sameCalendarDate(dragPreview.date, selectedDate) && (
                     <div
@@ -4538,6 +5039,8 @@ function CalendarView({
                     const endHour = parseTimeValue(session.meeting.end);
                     const top = Math.max(0, (startHour - timelineHours[0]) * dayHourHeight);
                     const height = Math.max(28, (endHour - startHour) * dayHourHeight);
+                    const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
+                    const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
                     return (
                       <button
                         type="button"
@@ -4562,15 +5065,31 @@ function CalendarView({
                           setDragPreview(null);
                         }}
                         onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
+                        onDoubleClick={() => {
+                          onSessionDoubleClick?.(session.course.id, session.meeting.id!, session.date);
+                          openQuickEditorForSession(session.course, session.meeting, session.date);
+                        }}
                         dir="auto"
                         className="absolute rounded-[22px] border px-4 py-3 text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)]"
                         style={{
                           ...softCourseStyle(session.course.color),
                           top,
                           height,
-                          borderColor: `${session.course.color}50`,
-                          left: `calc(${(session.column / session.totalColumns) * 100}% + 8px)`,
-                          width: `calc(${100 / session.totalColumns}% - 16px)`
+                          borderColor:
+                            selectedSession?.courseId === session.course.id &&
+                            selectedSession?.meetingId === session.meeting.id &&
+                            sameCalendarDate(selectedSession.anchorDate, session.date)
+                              ? "rgba(250,204,21,0.72)"
+                              : `${session.course.color}50`,
+                          left: `calc(${session.column * overlapStepPct}% + 8px)`,
+                          width: `calc(${overlapWidthPct}% - 16px)`,
+                          zIndex: 10 + session.column,
+                          boxShadow:
+                            selectedSession?.courseId === session.course.id &&
+                            selectedSession?.meetingId === session.meeting.id &&
+                            sameCalendarDate(selectedSession.anchorDate, session.date)
+                              ? "0 0 0 1px rgba(250,204,21,0.55), 0 0 14px rgba(250,204,21,0.20), 0 10px 28px rgba(15,23,42,0.08)"
+                              : undefined
                         }}
                       >
                         <p className="text-sm font-semibold text-slate-900 dark:text-white">{session.course.name}</p>
@@ -4693,7 +5212,7 @@ function CalendarView({
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Drag into the schedule to time-block.</p>
               </div>
             </div>
-            <div className="calendar-scroll-area max-h-[72vh] overflow-auto px-2 pb-3">
+            <div className="calendar-scroll-area max-h-[84vh] overflow-auto px-2 pb-3">
               {courses
                 .filter((course) => !course.archived)
                 .map((course) => {
@@ -4841,6 +5360,139 @@ function CalendarView({
               </div>
             );
           })()}
+        </div>
+      )}
+      </div>
+      {quickCreateDraft && quickCreateAnchor && (
+        <div className="fixed inset-0 z-[45]">
+          <button type="button" className="absolute inset-0" onClick={() => { setQuickCreateDraft(null); setQuickCreateAnchor(null); }} aria-label="Close quick session creator" />
+          <Panel
+            className="absolute w-[300px] max-w-[calc(100vw-1.5rem)] animate-fadeSlide bg-white/95 p-2.5 shadow-[0_14px_32px_rgba(15,23,42,0.24)] dark:bg-[#11151d]/95"
+            style={{ left: `${quickCreateAnchor.left}px`, top: `${quickCreateAnchor.top}px` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <input value={quickCreateDraft.title} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, title: event.target.value } : curr)} placeholder="New Event" className="w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold outline-none placeholder:text-slate-400" />
+            <input value={quickCreateDraft.location} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, location: event.target.value } : curr)} placeholder="Add Location or Video Call" className="mt-0.5 w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-slate-400" />
+            <button
+              type="button"
+              onClick={() => setQuickCreateDraft((curr) => curr ? { ...curr, detailsOpen: !curr.detailsOpen } : curr)}
+              className="mt-1.5 w-full rounded-lg border border-slate-200/80 bg-slate-50/70 px-2 py-1.5 text-left text-xs transition hover:bg-slate-100/80 dark:border-white/10 dark:bg-white/[0.04] dark:hover:bg-white/[0.06]"
+            >
+              {quickCreateDraft.date.toLocaleDateString(undefined, { day: "2-digit", month: "2-digit", year: "numeric" })}{" "}
+              {quickCreateDraft.isAllDay ? "All-day" : `${quickCreateDraft.start} to ${quickCreateDraft.end}`}
+            </button>
+            <div className={`grid overflow-hidden transition-all duration-200 ease-out ${quickCreateDraft.detailsOpen ? "mt-2 max-h-80 opacity-100" : "max-h-0 opacity-0"}`}>
+              <div className="grid gap-2 rounded-lg border border-slate-200/80 bg-slate-50/60 p-2 dark:border-white/10 dark:bg-white/[0.03]">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={quickCreateDraft.isAllDay}
+                    onChange={(event) => setQuickCreateDraft((curr) => (curr ? { ...curr, isAllDay: event.target.checked } : curr))}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  all-day
+                </label>
+                <select
+                  value={quickCreateDraft.courseId}
+                  disabled={quickCreateDraft.mode === "edit"}
+                  onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, courseId: event.target.value } : curr)}
+                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/[0.05]"
+                >
+                  {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+                </select>
+                {!quickCreateDraft.isAllDay && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <input type="time" value={quickCreateDraft.start} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, start: event.target.value } : curr)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]" />
+                    <input type="time" value={quickCreateDraft.end} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, end: event.target.value } : curr)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]" />
+                  </div>
+                )}
+                <select value={quickCreateDraft.cadence} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, cadence: event.target.value as SessionCadence } : curr)} className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]">
+                  <option value="none">Does not repeat</option>
+                  <option value="weekly">Repeats weekly</option>
+                </select>
+                {quickCreateDraft.cadence === "weekly" && (
+                  <div className="flex flex-wrap gap-1">
+                    {weekDays.map((day) => {
+                      const active = quickCreateDraft.repeatDays.includes(day);
+                      return (
+                        <button
+                          key={day}
+                          type="button"
+                          onClick={() => setQuickCreateDraft((curr) => {
+                            if (!curr) return curr;
+                            const next = active ? curr.repeatDays.filter((d) => d !== day) : [...curr.repeatDays, day];
+                            return { ...curr, repeatDays: next.length > 0 ? next : [day] };
+                          })}
+                          className={`rounded-full px-2 py-1 text-[11px] ${active ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900" : "bg-slate-200/70 text-slate-600 dark:bg-white/[0.06] dark:text-slate-300"}`}
+                        >
+                          {day}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <Button variant="ghost" onClick={() => { setQuickCreateDraft(null); setQuickCreateAnchor(null); }}>Cancel</Button>
+              <Button
+                onClick={() => {
+                  const course = courses.find((c) => c.id === quickCreateDraft.courseId);
+                  if (!course) return;
+                  if (quickCreateDraft.mode === "edit" && quickCreateDraft.meetingId) {
+                    onUpdateCourse({
+                      id: course.id,
+                      meetings: course.meetings.map((meeting) =>
+                        meeting.id === quickCreateDraft.meetingId
+                          ? {
+                              ...meeting,
+                              day: getWeekDayFromDate(quickCreateDraft.date),
+                              start: quickCreateDraft.isAllDay ? "00:00" : quickCreateDraft.start,
+                              end: quickCreateDraft.isAllDay ? "23:59" : quickCreateDraft.end,
+                              anchorDate: new Date(`${formatDateKey(quickCreateDraft.date)}T12:00:00`).toISOString(),
+                              title: quickCreateDraft.title.trim() || undefined,
+                              location: quickCreateDraft.location.trim() || undefined,
+                              isAllDay: quickCreateDraft.isAllDay,
+                              recurrence:
+                                quickCreateDraft.cadence === "weekly"
+                                  ? {
+                                      ...(meeting.recurrence ?? {}),
+                                      cadence: "weekly",
+                                      interval: meeting.recurrence?.interval ?? 1,
+                                      daysOfWeek: quickCreateDraft.repeatDays
+                                    }
+                                  : { cadence: "none", interval: 1 }
+                            }
+                          : meeting
+                      )
+                    });
+                  } else {
+                    const meeting = buildCourseMeeting({
+                      day: getWeekDayFromDate(quickCreateDraft.date),
+                      start: quickCreateDraft.start,
+                      end: quickCreateDraft.end,
+                      anchorDate: formatDateKey(quickCreateDraft.date),
+                      title: quickCreateDraft.title,
+                      location: quickCreateDraft.location,
+                      notes: "",
+                      type: "lecture",
+                      isAllDay: quickCreateDraft.isAllDay,
+                      cadence: quickCreateDraft.cadence,
+                      interval: 1,
+                      repeatDays: quickCreateDraft.repeatDays,
+                      until: "",
+                      count: ""
+                    });
+                    onUpdateCourse({ id: course.id, meetings: [...course.meetings, meeting] });
+                  }
+                  setQuickCreateDraft(null);
+                  setQuickCreateAnchor(null);
+                }}
+              >
+                {quickCreateDraft.mode === "edit" ? "Save" : "Add session"}
+              </Button>
+            </div>
+          </Panel>
         </div>
       )}
       {recurrenceMovePrompt && (

@@ -79,6 +79,53 @@ async function resolveActiveYear(): Promise<number> {
   return typeof firstYear === "number" && Number.isFinite(firstYear) ? firstYear : new Date().getFullYear();
 }
 
+function extractLocation(session: Record<string, unknown>): string | null {
+  const pushUnique = (arr: string[], value: string | null | undefined) => {
+    if (!value) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    if (!arr.includes(trimmed)) arr.push(trimmed);
+  };
+
+  const asRoomLabel = (roomLike: unknown): string | null => {
+    if (!roomLike || typeof roomLike !== "object") return null;
+    const room = roomLike as {
+      name?: { he?: unknown; en?: unknown };
+      userCode?: unknown;
+      building?: {
+        name?: { he?: unknown; en?: unknown };
+      };
+    };
+    const roomName =
+      (typeof room.name?.he === "string" ? room.name.he.trim() : "") ||
+      (typeof room.name?.en === "string" ? room.name.en.trim() : "");
+    const userCode = typeof room.userCode === "string" ? room.userCode.trim() : "";
+    const buildingName =
+      (typeof room.building?.name?.he === "string" ? room.building.name.he.trim() : "") ||
+      (typeof room.building?.name?.en === "string" ? room.building.name.en.trim() : "");
+    const parts: string[] = [];
+    pushUnique(parts, roomName);
+    if (userCode && (!roomName || !roomName.includes(userCode))) {
+      pushUnique(parts, userCode);
+    }
+    pushUnique(parts, buildingName);
+    return parts.length > 0 ? parts.join(", ") : null;
+  };
+
+  const displayRoom = session.displayRoom;
+  if (typeof displayRoom === "string" && displayRoom.trim().length > 0) {
+    return displayRoom.trim();
+  }
+  const fromDisplayRoomObj = asRoomLabel(displayRoom);
+  if (fromDisplayRoomObj) return fromDisplayRoomObj;
+
+  const room = session.room;
+  const fromRoomObj = asRoomLabel(room);
+  if (fromRoomObj) return fromRoomObj;
+
+  return null;
+}
+
 async function fetchHujiMeetingsByCourseCode(courseCode: string, year: number): Promise<HujiMeetingResolution> {
   const rawCourse = await fetchHujiApi(`/courses/code/${encodeURIComponent(courseCode)}?year=${year}&include=1`);
   if (!Array.isArray(rawCourse) || rawCourse.length === 0 || typeof rawCourse[0] !== "object" || !rawCourse[0]) {
@@ -122,8 +169,7 @@ async function fetchHujiMeetingsByCourseCode(courseCode: string, year: number): 
       const end = msToHm((session as { endTime?: unknown }).endTime as number | undefined);
       if (!weekday || !start || !end) continue;
 
-      const displayRoom = (session as { displayRoom?: unknown }).displayRoom;
-      const location = typeof displayRoom === "string" && displayRoom.trim().length > 0 ? displayRoom.trim() : null;
+      const location = extractLocation(session as Record<string, unknown>);
       const key = `${weekday}-${start}-${end}-${meetingType ?? ""}-${location ?? ""}-${semester ?? ""}`;
       if (optionSeen.has(key)) continue;
       optionSeen.add(key);

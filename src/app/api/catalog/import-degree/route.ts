@@ -125,14 +125,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await request.json()) as { degreeId?: string };
+    const body = (await request.json()) as { degreeId?: string; roadmapCode?: string };
     const degreeId = (body.degreeId ?? "biology") as DegreeId;
-    if (!(degreeId in DEGREE_ROADMAP_CODES)) {
-      return NextResponse.json({ error: "Unsupported degreeId" }, { status: 400 });
+    const roadmapCode = typeof body.roadmapCode === "string" && body.roadmapCode.trim().length > 0
+      ? body.roadmapCode.trim()
+      : DEGREE_ROADMAP_CODES[degreeId];
+    if (!roadmapCode) {
+      return NextResponse.json({ error: "roadmapCode is required" }, { status: 400 });
     }
 
     const activeYear = await resolveActiveYear();
-    const roadmapCode = DEGREE_ROADMAP_CODES[degreeId];
     const roadmapCourses = await fetchRoadmapCourses(roadmapCode, activeYear);
     if (roadmapCourses.length === 0) {
       return NextResponse.json({ error: "No courses found in roadmap API response" }, { status: 404 });
