@@ -7,6 +7,7 @@ import type { SchoolState, Store } from "@/lib/types";
 
 const CLOUD_ERROR_TOAST_COOLDOWN_MS = 20_000;
 let lastCloudErrorToastAt = 0;
+const LEGACY_DEMO_COURSE_CODES = new Set(["72320", "6177", "76632", "6170", "6172", "72368", "76957", "72542"]);
 
 function maybeShowCloudError(message: string): void {
   if (typeof window === "undefined") return;
@@ -16,6 +17,23 @@ function maybeShowCloudError(message: string): void {
   }
   lastCloudErrorToastAt = now;
   pushSchoolOsToast({ kind: "error", message });
+}
+
+function shouldResetLegacySeedWorkspace(state: SchoolState): boolean {
+  if (state.ui?.onboardingCompletedAt) return false;
+  if ((state.tasks?.length ?? 0) > 0 || (state.workBlocks?.length ?? 0) > 0 || (state.classNotes?.length ?? 0) > 0) {
+    return false;
+  }
+  const courses = state.courses ?? [];
+  if (courses.length !== LEGACY_DEMO_COURSE_CODES.size) return false;
+  return courses.every((course) => {
+    const code = (course.code ?? "").trim();
+    if (!LEGACY_DEMO_COURSE_CODES.has(code)) return false;
+    if (course.source) return false;
+    if ((course.instructor ?? "").trim().length > 0) return false;
+    if ((course.notes ?? "").trim().length > 0) return false;
+    return true;
+  });
 }
 
 export class SupabaseStateStore implements Store {
@@ -40,7 +58,14 @@ export class SupabaseStateStore implements Store {
     }
 
     if (data?.state) {
-      return data.state as SchoolState;
+      const loaded = data.state as SchoolState;
+      if (shouldResetLegacySeedWorkspace(loaded)) {
+        const initial = createSeedState();
+        // Non-blocking migration: users who never edited old demo data should see onboarding as first-time users.
+        void this.setState(initial).catch(() => {});
+        return initial;
+      }
+      return loaded;
     }
 
     // First-time cloud user: start clean, do not inherit browser-local data from another account.

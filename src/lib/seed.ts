@@ -1,4 +1,3 @@
-import { nowIso } from "@/lib/date";
 import type { SchoolState } from "@/lib/types";
 
 export function createSeedState(): SchoolState {
