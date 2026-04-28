@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent } from "react";
 import type { ComponentType, CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import {
   Archive,
   BarChart3,
@@ -192,6 +193,7 @@ const coursePalette = [
 
 const weekDays: WeekDay[] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 type SessionCadence = "none" | "daily" | "weekly" | "monthly";
+type QuickSessionType = "lecture" | "tutorial";
 
 function viewTitle(view: MainView): string {
   switch (view) {
@@ -3571,12 +3573,14 @@ function CalendarView({
     isAllDay: boolean;
     title: string;
     location: string;
+    sessionType: QuickSessionType;
     cadence: SessionCadence;
     repeatDays: WeekDay[];
     detailsOpen: boolean;
   } | null>(null);
   const [quickCreateAnchor, setQuickCreateAnchor] = useState<{ left: number; top: number } | null>(null);
   const tentativeBlockRef = useRef<HTMLDivElement | null>(null);
+  const quickDraftBlockRef = useRef<HTMLDivElement | null>(null);
   const weekGridBodyRef = useRef<HTMLDivElement | null>(null);
   const dayGridBodyRef = useRef<HTMLDivElement | null>(null);
   const dayTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3810,6 +3814,7 @@ function CalendarView({
       courseId: defaultCourseId,
       title: "",
       location: "",
+      sessionType: "lecture",
       isAllDay: false,
       cadence: "none",
       repeatDays: [getWeekDayFromDate(creatingSession.date)],
@@ -3864,7 +3869,7 @@ function CalendarView({
     setCreatingSession(null);
   }
 
-  function openQuickEditorForSession(course: Course, meeting: CourseMeeting, anchorDate: Date) {
+  function openQuickEditorForSession(course: Course, meeting: CourseMeeting, anchorDate: Date, anchorRect?: DOMRect) {
     const recurrence = meeting.recurrence;
     const cadence: SessionCadence = recurrence?.cadence === "weekly" ? "weekly" : "none";
     const startMinutes = parseTimeValue(meeting.start) * 60;
@@ -3876,8 +3881,9 @@ function CalendarView({
       courseId: course.id,
       meetingId: meeting.id,
       isAllDay: Boolean(meeting.isAllDay),
-      title: meeting.title ?? "",
+      title: meeting.title?.trim() || course.name,
       location: meeting.location ?? "",
+      sessionType: meeting.type === "tutorial" ? "tutorial" : "lecture",
       cadence,
       repeatDays: recurrence?.daysOfWeek?.length ? recurrence.daysOfWeek : [meeting.day],
       detailsOpen: false
@@ -3887,6 +3893,16 @@ function CalendarView({
     const topPx = ((startMinutes - timelineHours[0] * 60) / 60) * (mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight);
     const clampLeft = (value: number) => Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, value));
     const clampTop = (value: number) => Math.max(96, Math.min(window.innerHeight - popoverHeight - 12, value));
+    if (anchorRect) {
+      const preferredLeft = anchorRect.right + 2;
+      const fallbackLeft = anchorRect.left - popoverWidth - 2;
+      const left = preferredLeft + popoverWidth <= window.innerWidth - 12 ? preferredLeft : fallbackLeft;
+      setQuickCreateAnchor({
+        left: clampLeft(left),
+        top: clampTop(anchorRect.top)
+      });
+      return;
+    }
     if (mode === "week" && weekGridBodyRef.current) {
       const dayIndex = weekDates.findIndex((d) => sameCalendarDate(d, anchorDate));
       const weekColumns = Array.from(weekGridBodyRef.current.querySelectorAll("[data-week-column]")) as HTMLElement[];
@@ -4316,8 +4332,10 @@ function CalendarView({
                   }`}
                   onMouseDown={(event) => {
                     if (event.button !== 0 || draggingSession || draggingWorkBlock || resizingWorkBlock) return;
-                    const target = event.target as HTMLElement;
-                    if (target.closest("button")) return;
+                    const rawTarget = event.target;
+                    const target = rawTarget instanceof Element ? rawTarget : null;
+                    const blocked = Boolean(target?.closest("[data-calendar-interactive='true'],button,input,textarea,select,a,[role='button']"));
+                    if (blocked) return;
                     onClearSessionSelection?.();
                     startCreateSession(date, event.clientY, event.clientX, event.currentTarget.getBoundingClientRect(), WEEK_TIMELINE_ROW_PX);
                   }}
@@ -4402,8 +4420,9 @@ function CalendarView({
                       }}
                     />
                   )}
-                  {quickCreateDraft && sameCalendarDate(quickCreateDraft.date, date) && (
+                  {quickCreateDraft && quickCreateDraft.mode === "create" && sameCalendarDate(quickCreateDraft.date, date) && (
                     <div
+                      ref={quickDraftBlockRef}
                       className="pointer-events-none absolute left-[6px] right-[6px] rounded-2xl border border-sky-400/60 bg-sky-100/50"
                       style={{
                         top: ((parseTimeValue(quickCreateDraft.start) - timelineHours[0]) * WEEK_TIMELINE_ROW_PX),
@@ -4439,7 +4458,12 @@ function CalendarView({
                       <button
                         type="button"
                         key={session.instanceKey}
+                        data-calendar-interactive="true"
                         draggable
+                        onMouseDown={(event) => {
+                          // Prevent empty-grid drag-create handlers from firing when interacting with an existing session.
+                          event.stopPropagation();
+                        }}
                         onDragStart={(event) => {
                           const durationMinutes = Math.max(30, Math.round((parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60));
                           const rect = event.currentTarget.getBoundingClientRect();
@@ -4459,9 +4483,14 @@ function CalendarView({
                           setDragPreview(null);
                         }}
                         onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
-                        onDoubleClick={() => {
+                        onDoubleClick={(event) => {
                           onSessionDoubleClick?.(session.course.id, session.meeting.id!, session.date);
-                          openQuickEditorForSession(session.course, session.meeting, session.date);
+                          openQuickEditorForSession(
+                            session.course,
+                            session.meeting,
+                            session.date,
+                            event.currentTarget.getBoundingClientRect()
+                          );
                         }}
                         dir="auto"
                         className="absolute overflow-hidden rounded-2xl border px-3 py-2 text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity"
@@ -4889,8 +4918,10 @@ function CalendarView({
                   className={`relative ${draggingSession || draggingTaskId || draggingWorkBlock ? "bg-slate-50/40 dark:bg-white/[0.02]" : ""}`}
                   onMouseDown={(event) => {
                     if (event.button !== 0 || draggingSession) return;
-                    const target = event.target as HTMLElement;
-                    if (target.closest("button")) return;
+                    const rawTarget = event.target;
+                    const target = rawTarget instanceof Element ? rawTarget : null;
+                    const blocked = Boolean(target?.closest("[data-calendar-interactive='true'],button,input,textarea,select,a,[role='button']"));
+                    if (blocked) return;
                     onClearSessionSelection?.();
                     startCreateSession(selectedDate, event.clientY, event.clientX, event.currentTarget.getBoundingClientRect(), dayHourHeight);
                   }}
@@ -5085,8 +5116,9 @@ function CalendarView({
                       }}
                     />
                   )}
-                  {quickCreateDraft && sameCalendarDate(quickCreateDraft.date, selectedDate) && (
+                  {quickCreateDraft && quickCreateDraft.mode === "create" && sameCalendarDate(quickCreateDraft.date, selectedDate) && (
                     <div
+                      ref={quickDraftBlockRef}
                       className="pointer-events-none absolute left-[8px] right-[8px] rounded-[18px] border border-sky-400/60 bg-sky-100/50"
                       style={{
                         top: ((parseTimeValue(quickCreateDraft.start) - timelineHours[0]) * dayHourHeight),
@@ -5135,7 +5167,12 @@ function CalendarView({
                       <button
                         type="button"
                         key={session.instanceKey}
+                        data-calendar-interactive="true"
                         draggable
+                        onMouseDown={(event) => {
+                          // Prevent empty-grid drag-create handlers from firing when interacting with an existing session.
+                          event.stopPropagation();
+                        }}
                         onDragStart={(event) => {
                           const durationMinutes = Math.max(30, Math.round((parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60));
                           const rect = event.currentTarget.getBoundingClientRect();
@@ -5155,9 +5192,14 @@ function CalendarView({
                           setDragPreview(null);
                         }}
                         onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
-                        onDoubleClick={() => {
+                        onDoubleClick={(event) => {
                           onSessionDoubleClick?.(session.course.id, session.meeting.id!, session.date);
-                          openQuickEditorForSession(session.course, session.meeting, session.date);
+                          openQuickEditorForSession(
+                            session.course,
+                            session.meeting,
+                            session.date,
+                            event.currentTarget.getBoundingClientRect()
+                          );
                         }}
                         dir="auto"
                         className="absolute rounded-[22px] border px-4 py-3 text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)]"
@@ -5453,15 +5495,16 @@ function CalendarView({
         </div>
       )}
       </div>
-      {quickCreateDraft && quickCreateAnchor && (
+      {quickCreateDraft && quickCreateAnchor && typeof document !== "undefined" && createPortal(
         <div className="fixed inset-0 z-[45]">
           <button type="button" className="absolute inset-0" onClick={() => { setQuickCreateDraft(null); setQuickCreateAnchor(null); }} aria-label="Close quick session creator" />
           <Panel
+            id="quick-create-popover"
             className="absolute w-[300px] max-w-[calc(100vw-1.5rem)] animate-fadeSlide bg-white/95 p-2.5 shadow-[0_14px_32px_rgba(15,23,42,0.24)] dark:bg-[#11151d]/95"
             style={{ left: `${quickCreateAnchor.left}px`, top: `${quickCreateAnchor.top}px` }}
             onClick={(event) => event.stopPropagation()}
           >
-            <input value={quickCreateDraft.title} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, title: event.target.value } : curr)} placeholder="New Event" className="w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold outline-none placeholder:text-slate-400" />
+            <input value={quickCreateDraft.title} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, title: event.target.value } : curr)} placeholder={quickCreateDraft.mode === "edit" ? "Session title" : "New Event"} className="w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold outline-none placeholder:text-slate-400" />
             <input value={quickCreateDraft.location} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, location: event.target.value } : curr)} placeholder="Add Location or Video Call" className="mt-0.5 w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-slate-400" />
             <button
               type="button"
@@ -5489,6 +5532,14 @@ function CalendarView({
                   className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/[0.05]"
                 >
                   {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+                </select>
+                <select
+                  value={quickCreateDraft.sessionType}
+                  onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, sessionType: event.target.value as QuickSessionType } : curr)}
+                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]"
+                >
+                  <option value="lecture">Lecture</option>
+                  <option value="tutorial">Tirgul</option>
                 </select>
                 {!quickCreateDraft.isAllDay && (
                   <div className="grid grid-cols-2 gap-2">
@@ -5542,6 +5593,7 @@ function CalendarView({
                               anchorDate: new Date(`${formatDateKey(quickCreateDraft.date)}T12:00:00`).toISOString(),
                               title: quickCreateDraft.title.trim() || undefined,
                               location: quickCreateDraft.location.trim() || undefined,
+                              type: quickCreateDraft.sessionType,
                               isAllDay: quickCreateDraft.isAllDay,
                               recurrence:
                                 quickCreateDraft.cadence === "weekly"
@@ -5565,7 +5617,7 @@ function CalendarView({
                       title: quickCreateDraft.title,
                       location: quickCreateDraft.location,
                       notes: "",
-                      type: "lecture",
+                      type: quickCreateDraft.sessionType,
                       isAllDay: quickCreateDraft.isAllDay,
                       cadence: quickCreateDraft.cadence,
                       interval: 1,
@@ -5583,7 +5635,8 @@ function CalendarView({
               </Button>
             </div>
           </Panel>
-        </div>
+        </div>,
+        document.body
       )}
       {recurrenceMovePrompt && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 px-4">
@@ -6448,7 +6501,7 @@ function SessionEditorModal({
     (selectedCourseId !== "all" && courses.some((course) => course.id === selectedCourseId) ? selectedCourseId : courses[0]?.id ?? "");
   const initialDay = getWeekDayFromDate(defaultDate);
   const [courseId, setCourseId] = useState(initialCourseId);
-  const [title, setTitle] = useState(editingMeeting?.title ?? "");
+  const [title, setTitle] = useState(editingMeeting ? (editingMeeting.title?.trim() || editingCourse?.name || "") : "");
   const [start, setStart] = useState(editingMeeting?.start ?? sessionDraft?.start ?? "09:00");
   const [end, setEnd] = useState(editingMeeting?.end ?? sessionDraft?.end ?? "10:30");
   const [location, setLocation] = useState(editingMeeting?.location ?? "");
@@ -6466,7 +6519,7 @@ function SessionEditorModal({
     const nextMeeting = editingCourse?.meetings.find((meeting) => meeting.id === sessionDraft?.meetingId);
     const nextDate = sessionDraft?.anchorDate ?? selectedDate;
     setCourseId(editingCourse?.id ?? initialCourseId);
-    setTitle(nextMeeting?.title ?? "");
+    setTitle(nextMeeting ? (nextMeeting.title?.trim() || editingCourse?.name || "") : "");
     setStart(nextMeeting?.start ?? sessionDraft?.start ?? "09:00");
     setEnd(nextMeeting?.end ?? sessionDraft?.end ?? "10:30");
     setLocation(nextMeeting?.location ?? "");
@@ -6937,7 +6990,7 @@ function formatSessionType(type?: CourseMeeting["type"]): string {
     case "lab":
       return "Lab";
     case "tutorial":
-      return "Tutorial";
+      return "Tirgul";
     case "office-hours":
       return "Office hours";
     case "exam":

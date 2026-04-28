@@ -2,7 +2,6 @@
 
 import { createSeedState } from "@/lib/seed";
 import { pushSchoolOsToast } from "@/lib/global-app-toasts";
-import { LocalStorageStore } from "@/lib/storage";
 import { getSupabaseClient } from "@/lib/supabase";
 import type { SchoolState, Store } from "@/lib/types";
 
@@ -44,12 +43,11 @@ export class SupabaseStateStore implements Store {
       return data.state as SchoolState;
     }
 
-    // First-time cloud user: bootstrap from local storage if present.
-    const localStore = new LocalStorageStore();
-    const initial = await localStore.getState();
+    // First-time cloud user: start clean, do not inherit browser-local data from another account.
+    const initial = createSeedState();
     // Do not await upsert — a hung or blocked network would strand the app on "Booting…" forever.
     void this.setState(initial).catch((err) => {
-      console.error("Failed seeding cloud state from local (non-fatal):", err instanceof Error ? err.message : err);
+      console.error("Failed seeding empty cloud state (non-fatal):", err instanceof Error ? err.message : err);
     });
     return initial;
   }
