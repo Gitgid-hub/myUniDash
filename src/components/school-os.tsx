@@ -3509,7 +3509,16 @@ function CalendarView({
     sourceDate: Date;
   } | null>(null);
   const [dragPreview, setDragPreview] = useState<{ date: Date; startMinutes: number; endMinutes: number } | null>(null);
-  const [creatingSession, setCreatingSession] = useState<{ date: Date; startMinutes: number; endMinutes: number; hasDragged: boolean } | null>(null);
+  const [creatingSession, setCreatingSession] = useState<{
+    date: Date;
+    startMinutes: number;
+    endMinutes: number;
+    hasDragged: boolean;
+    pointerX: number;
+    columnLeft: number;
+    columnRight: number;
+    columnTop: number;
+  } | null>(null);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [taskDropPreview, setTaskDropPreview] = useState<{ startMinutes: number; endMinutes: number } | null>(null);
   const [draggingWorkBlock, setDraggingWorkBlock] = useState<{ id: string; durationMinutes: number } | null>(null);
@@ -3567,6 +3576,7 @@ function CalendarView({
     detailsOpen: boolean;
   } | null>(null);
   const [quickCreateAnchor, setQuickCreateAnchor] = useState<{ left: number; top: number } | null>(null);
+  const tentativeBlockRef = useRef<HTMLDivElement | null>(null);
   const weekGridBodyRef = useRef<HTMLDivElement | null>(null);
   const dayGridBodyRef = useRef<HTMLDivElement | null>(null);
   const dayTransitionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3746,12 +3756,21 @@ function CalendarView({
     };
   }
 
-  function startCreateSession(date: Date, clientY: number, bounds: DOMRect, hourHeight = 80) {
+  function startCreateSession(date: Date, clientY: number, clientX: number, bounds: DOMRect, hourHeight = 80) {
     const startMinutes = minutesFromPointer(clientY, bounds, hourHeight);
-    setCreatingSession({ date, startMinutes, endMinutes: startMinutes + 60, hasDragged: false });
+    setCreatingSession({
+      date,
+      startMinutes,
+      endMinutes: startMinutes + 60,
+      hasDragged: false,
+      pointerX: clientX,
+      columnLeft: bounds.left,
+      columnRight: bounds.right,
+      columnTop: bounds.top
+    });
   }
 
-  function updateCreateSession(clientY: number, bounds: DOMRect, hourHeight = 80) {
+  function updateCreateSession(clientY: number, clientX: number, bounds: DOMRect, hourHeight = 80) {
     setCreatingSession((current) => {
       if (!current) return current;
       const nextMinutes = minutesFromPointer(clientY, bounds, hourHeight);
@@ -3765,7 +3784,11 @@ function CalendarView({
         ...current,
         startMinutes: lower,
         endMinutes: upper,
-        hasDragged: true
+        hasDragged: true,
+        pointerX: clientX,
+        columnLeft: bounds.left,
+        columnRight: bounds.right,
+        columnTop: bounds.top
       };
     });
   }
@@ -3794,29 +3817,46 @@ function CalendarView({
     });
     const topPx = ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * (mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight);
     const popoverWidth = 300;
-    if (mode === "week" && weekGridBodyRef.current) {
-      const rect = weekGridBodyRef.current.getBoundingClientRect();
-      const gutter = 64;
-      const colWidth = Math.max(1, (rect.width - gutter) / 7);
-      const dayIndex = weekDates.findIndex((d) => sameCalendarDate(d, creatingSession.date));
-      const safeDayIndex = Math.max(0, dayIndex);
-      const colLeft = rect.left + gutter + safeDayIndex * colWidth;
-      // Keep the quick bubble visually attached to the created block (inside the same day column).
-      const inColumnPreferred = colLeft + 3;
-      const inColumnFallback = colLeft + colWidth - popoverWidth - 3;
-      const left = colWidth >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+    const popoverHeight = 160;
+    const blockRect = tentativeBlockRef.current?.getBoundingClientRect() ?? null;
+    const clampLeft = (value: number) => Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, value));
+    const clampTop = (value: number) => Math.max(96, Math.min(window.innerHeight - popoverHeight - 12, value));
+    if (blockRect) {
+      const preferredLeft = blockRect.right + 2;
+      const fallbackLeft = blockRect.left - popoverWidth - 2;
+      const left = preferredLeft + popoverWidth <= window.innerWidth - 12 ? preferredLeft : fallbackLeft;
       setQuickCreateAnchor({
-        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
-        top: Math.max(96, rect.top + topPx + 2)
+        left: clampLeft(left),
+        top: clampTop(blockRect.top)
+      });
+      setCreatingSession(null);
+      return;
+    }
+    if (mode === "week" && weekGridBodyRef.current) {
+      const scrollEl = weekGridBodyRef.current.closest(".calendar-scroll-area") as HTMLElement | null;
+      const scrollTop = scrollEl?.scrollTop ?? 0;
+      const blockViewportTop = creatingSession.columnTop + topPx - scrollTop;
+      const blockLeft = creatingSession.columnLeft + 6;
+      const blockRight = creatingSession.columnRight - 6;
+      const preferredLeft = blockRight + 2;
+      const fallbackLeft = blockLeft - popoverWidth - 2;
+      const left = preferredLeft + popoverWidth <= window.innerWidth - 12 ? preferredLeft : fallbackLeft;
+      setQuickCreateAnchor({
+        left: clampLeft(left),
+        top: clampTop(blockViewportTop)
       });
     } else if (mode === "day" && dayGridBodyRef.current) {
-      const rect = dayGridBodyRef.current.getBoundingClientRect();
-      const inColumnPreferred = rect.left + 3;
-      const inColumnFallback = rect.right - popoverWidth - 3;
-      const left = rect.width >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+      const scrollEl = dayGridBodyRef.current.closest(".calendar-scroll-area") as HTMLElement | null;
+      const scrollTop = scrollEl?.scrollTop ?? 0;
+      const blockViewportTop = creatingSession.columnTop + topPx - scrollTop;
+      const blockLeft = creatingSession.columnLeft + 8;
+      const blockRight = creatingSession.columnRight - 8;
+      const preferredLeft = blockRight + 2;
+      const fallbackLeft = blockLeft - popoverWidth - 2;
+      const left = preferredLeft + popoverWidth <= window.innerWidth - 12 ? preferredLeft : fallbackLeft;
       setQuickCreateAnchor({
-        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
-        top: Math.max(96, rect.top + topPx + 2)
+        left: clampLeft(left),
+        top: clampTop(blockViewportTop)
       });
     } else {
       setQuickCreateAnchor({ left: window.innerWidth - 380, top: 140 });
@@ -3843,29 +3883,41 @@ function CalendarView({
       detailsOpen: false
     });
     const popoverWidth = 300;
+    const popoverHeight = 160;
     const topPx = ((startMinutes - timelineHours[0] * 60) / 60) * (mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight);
+    const clampLeft = (value: number) => Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, value));
+    const clampTop = (value: number) => Math.max(96, Math.min(window.innerHeight - popoverHeight - 12, value));
     if (mode === "week" && weekGridBodyRef.current) {
-      const rect = weekGridBodyRef.current.getBoundingClientRect();
-      const gutter = 64;
-      const colWidth = Math.max(1, (rect.width - gutter) / 7);
       const dayIndex = weekDates.findIndex((d) => sameCalendarDate(d, anchorDate));
-      const safeDayIndex = Math.max(0, dayIndex);
-      const colLeft = rect.left + gutter + safeDayIndex * colWidth;
-      const inColumnPreferred = colLeft + 3;
-      const inColumnFallback = colLeft + colWidth - popoverWidth - 3;
-      const left = colWidth >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+      const weekColumns = Array.from(weekGridBodyRef.current.querySelectorAll("[data-week-column]")) as HTMLElement[];
+      const columnEl = dayIndex >= 0 ? weekColumns[dayIndex] ?? null : null;
+      const rect = (columnEl ?? weekGridBodyRef.current).getBoundingClientRect();
+      const scrollEl = weekGridBodyRef.current.closest(".calendar-scroll-area") as HTMLElement | null;
+      const scrollTop = scrollEl?.scrollTop ?? 0;
+      const blockViewportTop = rect.top + topPx - scrollTop;
+      const blockLeft = rect.left + 6;
+      const blockRight = rect.right - 6;
+      const preferredLeft = blockRight + 2;
+      const fallbackLeft = blockLeft - popoverWidth - 2;
+      const left = preferredLeft + popoverWidth <= window.innerWidth - 12 ? preferredLeft : fallbackLeft;
       setQuickCreateAnchor({
-        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
-        top: Math.max(96, rect.top + topPx + 2)
+        left: clampLeft(left),
+        top: clampTop(blockViewportTop)
       });
     } else if (mode === "day" && dayGridBodyRef.current) {
-      const rect = dayGridBodyRef.current.getBoundingClientRect();
-      const inColumnPreferred = rect.left + 3;
-      const inColumnFallback = rect.right - popoverWidth - 3;
-      const left = rect.width >= popoverWidth + 24 ? inColumnPreferred : inColumnFallback;
+      const dayColumnEl = dayGridBodyRef.current.children.item(1) as HTMLElement | null;
+      const rect = (dayColumnEl ?? dayGridBodyRef.current).getBoundingClientRect();
+      const scrollEl = dayGridBodyRef.current.closest(".calendar-scroll-area") as HTMLElement | null;
+      const scrollTop = scrollEl?.scrollTop ?? 0;
+      const blockViewportTop = rect.top + topPx - scrollTop;
+      const blockLeft = rect.left + 8;
+      const blockRight = rect.right - 8;
+      const preferredLeft = blockRight + 2;
+      const fallbackLeft = blockLeft - popoverWidth - 2;
+      const left = preferredLeft + popoverWidth <= window.innerWidth - 12 ? preferredLeft : fallbackLeft;
       setQuickCreateAnchor({
-        left: Math.max(12, Math.min(window.innerWidth - popoverWidth - 12, left)),
-        top: Math.max(96, rect.top + topPx + 2)
+        left: clampLeft(left),
+        top: clampTop(blockViewportTop)
       });
     } else {
       setQuickCreateAnchor({ left: window.innerWidth - 360, top: 140 });
@@ -4116,8 +4168,6 @@ function CalendarView({
     };
   }, [taskByDay, visibleCourses, weekTransition]);
 
-  const calendarTitle = mode === "day" ? "Daily" : "Calendar";
-
   function renderWeekGrid(
     weekData: Array<{ date: Date; key: string; sessions: SessionOccurrence[]; tasks: Task[] }>,
     selectedDayForHeader: Date
@@ -4134,7 +4184,48 @@ function CalendarView({
               <p className="mt-2 text-[10px] text-slate-400 dark:text-slate-500">Loading Jewish holidays…</p>
             ) : null}
           </div>
-          <div className="col-span-7 min-h-[1px]" aria-hidden />
+          <div className="col-span-7 flex items-start justify-end px-2 py-1.5">
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("prev")}
+                  className="h-7 min-w-7 rounded-full px-1 text-[14px] font-semibold leading-none text-slate-700 hover:bg-slate-200/70 dark:text-slate-100 dark:hover:bg-white/[0.08]"
+                  aria-label="Previous period"
+                >
+                  <span aria-hidden>‹</span>
+                </Button>
+                <Button variant="ghost" onClick={() => onSelectDate(new Date())} className="h-7 rounded-full px-2.5 text-xs">Today</Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("next")}
+                  className="h-7 min-w-7 rounded-full px-1 text-[14px] font-semibold leading-none text-slate-700 hover:bg-slate-200/70 dark:text-slate-100 dark:hover:bg-white/[0.08]"
+                  aria-label="Next period"
+                >
+                  <span aria-hidden>›</span>
+                </Button>
+              </div>
+              <input
+                type="date"
+                value={formatDateKey(selectedDate)}
+                onChange={(event) => onSelectDate(new Date(`${event.target.value}T12:00:00`))}
+                className="h-8 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs outline-none dark:border-white/10 dark:bg-white/[0.04]"
+              />
+              <Button variant="outline" onClick={() => onOpenAddSession(selectedDate)} className="h-8 rounded-full px-2.5 text-xs">Add</Button>
+              <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
+                <Button variant={mode === "month" ? "primary" : "ghost"} onClick={() => onMode("month")} className="h-7 rounded-full px-2.5 text-xs">Month</Button>
+                <Button variant={mode === "week" ? "primary" : "ghost"} onClick={() => onMode("week")} className="h-7 rounded-full px-2.5 text-xs">Week</Button>
+                <Button
+                  variant={mode === "day" ? "primary" : "ghost"}
+                  onClick={() => onMode("day")}
+                  data-onboarding="calendar-day-button"
+                  className="h-7 rounded-full px-2.5 text-xs"
+                >
+                  Day
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
         <div className="grid grid-cols-[64px_repeat(7,minmax(0,1fr))] border-b border-slate-200/80 bg-slate-50/80 dark:border-white/10 dark:bg-white/[0.03]">
           <div className="px-3 py-3 text-xs text-slate-400">Time</div>
@@ -4228,12 +4319,12 @@ function CalendarView({
                     const target = event.target as HTMLElement;
                     if (target.closest("button")) return;
                     onClearSessionSelection?.();
-                    startCreateSession(date, event.clientY, event.currentTarget.getBoundingClientRect(), WEEK_TIMELINE_ROW_PX);
+                    startCreateSession(date, event.clientY, event.clientX, event.currentTarget.getBoundingClientRect(), WEEK_TIMELINE_ROW_PX);
                   }}
                   onMouseMove={(event) => {
                     if (draggingWorkBlock || resizingWorkBlock) return;
                     if (!creatingSession || !sameCalendarDate(creatingSession.date, date)) return;
-                    updateCreateSession(event.clientY, event.currentTarget.getBoundingClientRect(), WEEK_TIMELINE_ROW_PX);
+                    updateCreateSession(event.clientY, event.clientX, event.currentTarget.getBoundingClientRect(), WEEK_TIMELINE_ROW_PX);
                   }}
                   onMouseUp={() => {
                     if (draggingWorkBlock || resizingWorkBlock) return;
@@ -4303,6 +4394,7 @@ function CalendarView({
                   ))}
                   {creatingSession && creatingSession.hasDragged && sameCalendarDate(creatingSession.date, date) && (
                     <div
+                      ref={tentativeBlockRef}
                       className="pointer-events-none absolute left-[6px] right-[6px] rounded-2xl border-2 border-dashed border-sky-400/70 bg-sky-100/45"
                       style={{
                         top: ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX,
@@ -4592,21 +4684,8 @@ function CalendarView({
 
   return (
     <Panel className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white/90 dark:bg-[#101317]/90">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold">{calendarTitle}</h3>
-          {tentativeOptions && tentativeOptions.length > 0 && (
-            <p className="mt-1 truncate text-[11px] text-amber-600/95 dark:text-amber-200/95">
-              Choose 1 of {tentativeOptionSummary?.optionCount ?? tentativeOptions.length} for {tentativeChoiceTitle ?? "session group"}
-              {tentativeOptionSummary
-                ? ` · ${tentativeOptionSummary.minBlocks === tentativeOptionSummary.maxBlocks
-                  ? `${tentativeOptionSummary.minBlocks} weekly block${tentativeOptionSummary.minBlocks === 1 ? "" : "s"} each`
-                  : "multiple weekly blocks"}`
-                : ""}
-            </p>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
+      {mode !== "week" && (
+        <div className="mb-2 flex flex-wrap items-center justify-end gap-1.5">
           <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
             <Button
               variant="ghost"
@@ -4635,7 +4714,7 @@ function CalendarView({
           <Button variant="outline" onClick={() => onOpenAddSession(selectedDate)} className="h-8 rounded-full px-2.5 text-xs">Add</Button>
           <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
             <Button variant={mode === "month" ? "primary" : "ghost"} onClick={() => onMode("month")} className="h-7 rounded-full px-2.5 text-xs">Month</Button>
-            <Button variant={mode === "week" ? "primary" : "ghost"} onClick={() => onMode("week")} className="h-7 rounded-full px-2.5 text-xs">Week</Button>
+            <Button variant="ghost" onClick={() => onMode("week")} className="h-7 rounded-full px-2.5 text-xs">Week</Button>
             <Button
               variant={mode === "day" ? "primary" : "ghost"}
               onClick={() => onMode("day")}
@@ -4646,7 +4725,17 @@ function CalendarView({
             </Button>
           </div>
         </div>
-      </div>
+      )}
+      {tentativeOptions && tentativeOptions.length > 0 && (
+        <p className="mb-2 truncate text-[11px] text-amber-600/95 dark:text-amber-200/95">
+          Choose 1 of {tentativeOptionSummary?.optionCount ?? tentativeOptions.length} for {tentativeChoiceTitle ?? "session group"}
+          {tentativeOptionSummary
+            ? ` · ${tentativeOptionSummary.minBlocks === tentativeOptionSummary.maxBlocks
+              ? `${tentativeOptionSummary.minBlocks} weekly block${tentativeOptionSummary.minBlocks === 1 ? "" : "s"} each`
+              : "multiple weekly blocks"}`
+            : ""}
+        </p>
+      )}
       <div className="min-h-0 flex-1">
       {mode === "month" ? (
         <>
@@ -4803,7 +4892,7 @@ function CalendarView({
                     const target = event.target as HTMLElement;
                     if (target.closest("button")) return;
                     onClearSessionSelection?.();
-                    startCreateSession(selectedDate, event.clientY, event.currentTarget.getBoundingClientRect(), dayHourHeight);
+                    startCreateSession(selectedDate, event.clientY, event.clientX, event.currentTarget.getBoundingClientRect(), dayHourHeight);
                   }}
                   onMouseMove={(event) => {
                     if (resizingWorkBlock) {
@@ -4846,7 +4935,7 @@ function CalendarView({
                       return;
                     }
                     if (!creatingSession || !sameCalendarDate(creatingSession.date, selectedDate)) return;
-                    updateCreateSession(event.clientY, event.currentTarget.getBoundingClientRect(), dayHourHeight);
+                    updateCreateSession(event.clientY, event.clientX, event.currentTarget.getBoundingClientRect(), dayHourHeight);
                   }}
                   onMouseUp={() => {
                     if (resizingWorkBlock) {
@@ -4988,6 +5077,7 @@ function CalendarView({
                   ))}
                   {creatingSession && creatingSession.hasDragged && sameCalendarDate(creatingSession.date, selectedDate) && (
                     <div
+                      ref={tentativeBlockRef}
                       className="pointer-events-none absolute left-[8px] right-[8px] rounded-[18px] border-2 border-dashed border-sky-400/70 bg-sky-100/45"
                       style={{
                         top: ((creatingSession.startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight,
