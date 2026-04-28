@@ -465,6 +465,9 @@ export function SchoolOS() {
   const [onboardingActive, setOnboardingActive] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
   const [onboardingTargetElement, setOnboardingTargetElement] = useState<HTMLElement | null>(null);
+  const [onboardingActiveCourseCountAtStart, setOnboardingActiveCourseCountAtStart] = useState(0);
+  const [onboardingDemoTaskId, setOnboardingDemoTaskId] = useState<string | null>(null);
+  const [freshlyAddedCourseId, setFreshlyAddedCourseId] = useState<string | null>(null);
   const [pendingSessionChoiceFlow, setPendingSessionChoiceFlow] = useState<{
     courseId: string;
     courseName: string;
@@ -609,15 +612,21 @@ export function SchoolOS() {
 
   const resolveOnboardingTarget = useCallback((): HTMLElement | null => {
     if (!onboardingStep?.targetSelector) return null;
+    if (onboardingStep.id === "add-course" && isCatalogPickerOpen) {
+      const catalogPanel = document.querySelector("[data-onboarding='catalog-import-panel']");
+      if (catalogPanel instanceof HTMLElement) return catalogPanel;
+    }
     const target = document.querySelector(onboardingStep.targetSelector);
     return target instanceof HTMLElement ? target : null;
-  }, [onboardingStep]);
+  }, [isCatalogPickerOpen, onboardingStep]);
 
   const beginOnboarding = useCallback(() => {
+    const activeCourseCount = state.courses.filter((course) => !course.archived).length;
+    setOnboardingActiveCourseCountAtStart(activeCourseCount);
     setOnboardingStepIndex(0);
     setOnboardingTargetElement(null);
     setOnboardingActive(true);
-  }, []);
+  }, [state.courses]);
 
   const finishOnboarding = useCallback((markComplete = true) => {
     setOnboardingActive(false);
@@ -631,10 +640,26 @@ export function SchoolOS() {
     if (!onboardingActive) return;
     const step = MINIMAL_CORE_ONBOARDING_STEPS[onboardingStepIndex];
     const hasAtLeastOneActiveCourse = state.courses.some((course) => !course.archived);
-    if (step?.id === "courses" && !hasAtLeastOneActiveCourse) {
+    const hasAddedCourseDuringOnboarding = state.courses.filter((course) => !course.archived).length > onboardingActiveCourseCountAtStart;
+    const hasAtLeastOneScheduledMeeting = state.courses.some((course) => !course.archived && course.meetings.length > 0);
+    if (step?.id === "add-course" && !hasAddedCourseDuringOnboarding) {
       pushSchoolOsToast({
         kind: "error",
-        message: "Add at least one course to continue onboarding."
+        message: "Add one course from the roadmap list to continue onboarding."
+      });
+      return;
+    }
+    if (step?.id === "calendar-hours" && !hasAtLeastOneScheduledMeeting) {
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Choose class hours in Calendar to continue onboarding."
+      });
+      return;
+    }
+    if (step?.id === "calendar-hours" && pendingSessionChoiceFlow) {
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Pick one Tirgul option in Calendar to continue onboarding."
       });
       return;
     }
@@ -644,7 +669,7 @@ export function SchoolOS() {
       return;
     }
     setOnboardingStepIndex((n) => Math.min(lastIdx, n + 1));
-  }, [finishOnboarding, onboardingActive, onboardingStepIndex, state.courses]);
+  }, [finishOnboarding, onboardingActive, onboardingActiveCourseCountAtStart, onboardingStepIndex, pendingSessionChoiceFlow, state.courses]);
 
   const retreatOnboarding = useCallback(() => {
     if (!onboardingActive) return;
@@ -858,8 +883,9 @@ export function SchoolOS() {
 
   const skipOnboarding = useCallback(() => {
     const hasAtLeastOneActiveCourse = state.courses.some((course) => !course.archived);
+    const hasAtLeastOneScheduledMeeting = state.courses.some((course) => !course.archived && course.meetings.length > 0);
     if (!hasAtLeastOneActiveCourse) {
-      const coursesStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "courses");
+      const coursesStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "add-course");
       setOnboardingStepIndex(coursesStepIndex >= 0 ? coursesStepIndex : 0);
       pushSchoolOsToast({
         kind: "error",
@@ -867,8 +893,65 @@ export function SchoolOS() {
       });
       return;
     }
+    if (!hasAtLeastOneScheduledMeeting) {
+      const chooseHoursStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "calendar-hours");
+      setOnboardingStepIndex(chooseHoursStepIndex >= 0 ? chooseHoursStepIndex : 0);
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Confirm at least one class hour in Calendar before finishing onboarding."
+      });
+      return;
+    }
+    if (pendingSessionChoiceFlow) {
+      const chooseHoursStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "calendar-hours");
+      setOnboardingStepIndex(chooseHoursStepIndex >= 0 ? chooseHoursStepIndex : 0);
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Choose a Tirgul option in Calendar before finishing onboarding."
+      });
+      return;
+    }
     finishOnboarding(true);
-  }, [finishOnboarding, state.courses]);
+  }, [finishOnboarding, pendingSessionChoiceFlow, state.courses]);
+
+  useEffect(() => {
+    if (!onboardingActive || onboardingStep?.id !== "add-course") return;
+    const hasAddedCourseDuringOnboarding = state.courses.filter((course) => !course.archived).length > onboardingActiveCourseCountAtStart;
+    if (!hasAddedCourseDuringOnboarding) return;
+    const chooseHoursStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "calendar-hours");
+    setCalendarMode("week");
+    dispatch({ type: "set-view", payload: "calendar" });
+    if (chooseHoursStepIndex >= 0) {
+      setOnboardingStepIndex(chooseHoursStepIndex);
+    }
+  }, [dispatch, onboardingActive, onboardingActiveCourseCountAtStart, onboardingStep?.id, state.courses]);
+
+  useEffect(() => {
+    if (!onboardingActive || onboardingStep?.id !== "calendar-day") return;
+    setCalendarMode("day");
+    const primaryCourse = activeCourses[0];
+    if (!primaryCourse) return;
+    const hasBookableTaskForCourse = state.tasks.some(
+      (task) => task.courseId === primaryCourse.id && task.status !== "done"
+    );
+    if (hasBookableTaskForCourse) return;
+    const demoTaskId = onboardingDemoTaskId ?? createId("task");
+    if (!state.tasks.some((task) => task.id === demoTaskId)) {
+      dispatch({
+        type: "add-task",
+        payload: {
+          id: demoTaskId,
+          title: "Drag me into your day plan",
+          description: "Drop this task into a time slot to create a booked work block.",
+          courseId: primaryCourse.id,
+          status: "next",
+          priority: "medium",
+          effort: 1
+        }
+      });
+    }
+    setOnboardingDemoTaskId(demoTaskId);
+  }, [activeCourses, dispatch, onboardingActive, onboardingDemoTaskId, onboardingStep?.id, state.tasks]);
 
   useEffect(() => {
     if (!selectedCourse) {
@@ -1404,12 +1487,15 @@ export function SchoolOS() {
       return;
     }
     const normalizedCode = newCourseCode.trim() || trimmedName;
+    const newCourseId = createId("course");
     addCourse({
+      id: newCourseId,
       name: trimmedName,
       code: normalizedCode,
       color: newCourseColor,
       progressMode: "manual"
     });
+    setFreshlyAddedCourseId(newCourseId);
     setNewCourseName("");
     setNewCourseCode("");
     setNewCourseColor(coursePalette[0]);
@@ -1537,6 +1623,8 @@ export function SchoolOS() {
         progressMode: "manual",
         meetings: mappedMeetings
       });
+      setFreshlyAddedCourseId(newCourseId);
+      setVisibleCourseIds((current) => (current.includes(newCourseId) ? current : [...current, newCourseId]));
       if (meetingChoices.length > 0) {
         const mappedChoiceSets = meetingChoices
           .filter((set) => (set.options ?? []).length > 1)
@@ -1584,7 +1672,7 @@ export function SchoolOS() {
     }
   }, [addCourse, dispatch, getAuthHeader, state.courses]);
 
-  const loadDegreeRoadmapCourses = useCallback(async (degreeId: string, showToast = true) => {
+  const loadDegreeRoadmapCourses = useCallback(async (degreeId: string, showToast = true): Promise<boolean> => {
     const requestSeq = degreeLoadRequestSeqRef.current + 1;
     degreeLoadRequestSeqRef.current = requestSeq;
     setCatalogDegreeImporting(true);
@@ -1608,7 +1696,7 @@ export function SchoolOS() {
         throw new Error(payload.error ?? "Degree import failed");
       }
       if (degreeLoadRequestSeqRef.current !== requestSeq) {
-        return;
+        return false;
       }
       const courses = (payload.courses ?? []) as Array<CatalogSearchCourse & { updatedAt?: string }>;
       const roadmapCode = typeof payload.roadmapCode === "string" ? payload.roadmapCode : null;
@@ -1625,11 +1713,13 @@ export function SchoolOS() {
             : "No roadmap courses found for this degree."
         });
       }
+      return true;
     } catch (error) {
       if (degreeLoadRequestSeqRef.current !== requestSeq) {
-        return;
+        return false;
       }
       setCatalogError(error instanceof Error ? error.message : "Degree import failed");
+      return false;
     } finally {
       if (degreeLoadRequestSeqRef.current === requestSeq) {
         setCatalogDegreeImporting(false);
@@ -1638,16 +1728,24 @@ export function SchoolOS() {
   }, [catalogDegreeOptions, getAuthHeader]);
 
   const importFullDegreePlan = useCallback(async () => {
-    await loadDegreeRoadmapCourses(catalogDegree, true);
-  }, [catalogDegree, loadDegreeRoadmapCourses]);
+    const loaded = await loadDegreeRoadmapCourses(catalogDegree, true);
+    if (!loaded) return;
+    dispatch({ type: "set-view", payload: "courses" });
+    setIsSettingsOpen(false);
+    if (onboardingActive) {
+      const addCourseStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "add-course");
+      if (addCourseStepIndex >= 0) {
+        setOnboardingStepIndex(addCourseStepIndex);
+      }
+    }
+  }, [catalogDegree, dispatch, loadDegreeRoadmapCourses, onboardingActive]);
 
   const selectCatalogDegreeOption = useCallback((degree: CatalogDegreeOption) => {
     setCatalogDegree(degree.id);
     setCatalogDegreeSearchQuery(degree.label);
     setIsCatalogDegreeOptionsOpen(false);
     setCatalogQuery("");
-    void loadDegreeRoadmapCourses(degree.id, false);
-  }, [loadDegreeRoadmapCourses]);
+  }, []);
 
   useEffect(() => {
     if (!isCatalogPickerOpen) return;
@@ -1926,6 +2024,7 @@ export function SchoolOS() {
               tentativeOptions={tentativeCalendarOptions}
               tentativeChoiceTitle={activeChoiceSet?.label}
               onPickTentativeOption={selectTentativeCalendarOption}
+              newlyAddedCourseId={freshlyAddedCourseId}
             />
           )}
           {state.ui.activeView === "courses" && (
@@ -2204,17 +2303,7 @@ export function SchoolOS() {
               {catalogDegreeSearchLoading && (
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Searching degrees...</p>
               )}
-              <Button
-                variant="outline"
-                className="mt-3 w-full justify-center"
-                onClick={() => {
-                  setIsCatalogPickerOpen(true);
-                  setIsSettingsOpen(false);
-                }}
-              >
-                Open HUJI import
-              </Button>
-              <Button className="mt-2 w-full justify-center" onClick={() => void importFullDegreePlan()} disabled={catalogDegreeImporting}>
+              <Button className="mt-3 w-full justify-center" data-onboarding="load-roadmap-button" onClick={() => void importFullDegreePlan()} disabled={catalogDegreeImporting}>
                 {catalogDegreeImporting
                   ? "Loading roadmap..."
                   : `Load roadmap${selectedCatalogDegreeOption ? ` (${selectedCatalogDegreeOption.roadmapCode})` : ""}`}
@@ -2485,7 +2574,7 @@ export function SchoolOS() {
 
       {isCatalogPickerOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <Panel className="w-full max-w-3xl bg-white/95 p-5 dark:bg-[#101317]/95">
+          <Panel data-onboarding="catalog-import-panel" className="w-full max-w-3xl bg-white/95 p-5 dark:bg-[#101317]/95">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold">HUJI Catalog Import</h3>
@@ -3354,7 +3443,8 @@ function CalendarView({
   onOpenTask,
   tentativeOptions,
   tentativeChoiceTitle,
-  onPickTentativeOption
+  onPickTentativeOption,
+  newlyAddedCourseId
 }: {
   tasks: Task[];
   workBlocks: WorkBlock[];
@@ -3386,6 +3476,7 @@ function CalendarView({
   }>;
   tentativeChoiceTitle?: string;
   onPickTentativeOption?: (optionId: string) => void;
+  newlyAddedCourseId?: string | null;
 }) {
   const visibleCourses = useMemo(() => courses.filter((course) => visibleCourseIds.includes(course.id)), [courses, visibleCourseIds]);
   const courseMap = useMemo(() => Object.fromEntries(courses.map((course) => [course.id, course])), [courses]);
@@ -4454,6 +4545,7 @@ function CalendarView({
                     const height = Math.max(28, (endHour - startHour) * WEEK_TIMELINE_ROW_PX);
                     const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
                     const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
+                    const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
                     return (
                       <button
                         type="button"
@@ -4513,7 +4605,9 @@ function CalendarView({
                             selectedSession?.meetingId === session.meeting.id &&
                             sameCalendarDate(selectedSession.anchorDate, session.date)
                               ? "0 0 0 1px rgba(250,204,21,0.55), 0 0 14px rgba(250,204,21,0.20), 0 10px 24px rgba(15,23,42,0.08)"
-                              : undefined
+                              : isFreshlyAddedCourse
+                                ? "0 0 0 1px rgba(34,197,94,0.45), 0 0 18px rgba(16,185,129,0.26), 0 10px 24px rgba(15,23,42,0.08)"
+                                : undefined
                         }}
                       >
                         <p className="truncate font-semibold text-slate-900 dark:text-white">{session.course.name}</p>
@@ -4712,7 +4806,7 @@ function CalendarView({
   }
 
   return (
-    <Panel className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white/90 dark:bg-[#101317]/90">
+    <Panel data-onboarding="calendar-week-grid" className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-white/90 dark:bg-[#101317]/90">
       {mode !== "week" && (
         <div className="mb-2 flex flex-wrap items-center justify-end gap-1.5">
           <div className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-white/10 dark:bg-white/[0.03]">
@@ -4756,7 +4850,7 @@ function CalendarView({
         </div>
       )}
       {tentativeOptions && tentativeOptions.length > 0 && (
-        <p className="mb-2 truncate text-[11px] text-amber-600/95 dark:text-amber-200/95">
+        <p data-onboarding="tentative-choices-banner" className="mb-2 truncate text-[11px] text-amber-600/95 dark:text-amber-200/95">
           Choose 1 of {tentativeOptionSummary?.optionCount ?? tentativeOptions.length} for {tentativeChoiceTitle ?? "session group"}
           {tentativeOptionSummary
             ? ` · ${tentativeOptionSummary.minBlocks === tentativeOptionSummary.maxBlocks
@@ -4848,7 +4942,7 @@ function CalendarView({
           renderWeekGrid(weekOccurrencesByDay, selectedDate)
         )
       ) : (
-        <div className="grid gap-4 xl:grid-cols-[1.25fr_0.9fr]">
+        <div data-onboarding="calendar-day-planner" className="grid h-full min-h-0 gap-4 xl:grid-cols-[1.25fr_0.9fr]">
           <div
             className="flex min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200/80 bg-white/60 dark:border-white/10 dark:bg-white/[0.02]"
             style={
@@ -5029,7 +5123,7 @@ function CalendarView({
                     event.preventDefault();
                     const task = tasks.find((t) => t.id === taskId);
                     const durationMinutes = workBlockDurationMinutesForTask(task);
-                    const minAllowedMinutes = getMinimumAllowedMinutesForDate(selectedDate);
+                    const minAllowedMinutes = timelineHours[0] * 60;
                     const slot = calculateDraggedSlot(
                       event.clientY,
                       event.currentTarget.getBoundingClientRect(),
@@ -5084,7 +5178,7 @@ function CalendarView({
                     const task = tasks.find((t) => t.id === taskId);
                     if (!task) return;
                     const durationMinutes = workBlockDurationMinutesForTask(task);
-                    const minAllowedMinutes = getMinimumAllowedMinutesForDate(selectedDate);
+                    const minAllowedMinutes = timelineHours[0] * 60;
                     const slot = calculateDraggedSlot(event.clientY, event.currentTarget.getBoundingClientRect(), durationMinutes, minAllowedMinutes, dayHourHeight);
                     if (slot.startMinutes < minAllowedMinutes) return;
                     const startAt = buildIsoAtMinutes(selectedDate, slot.startMinutes);
@@ -5163,6 +5257,7 @@ function CalendarView({
                     const height = Math.max(28, (endHour - startHour) * dayHourHeight);
                     const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
                     const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
+                    const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
                     return (
                       <button
                         type="button"
@@ -5221,7 +5316,9 @@ function CalendarView({
                             selectedSession?.meetingId === session.meeting.id &&
                             sameCalendarDate(selectedSession.anchorDate, session.date)
                               ? "0 0 0 1px rgba(250,204,21,0.55), 0 0 14px rgba(250,204,21,0.20), 0 10px 28px rgba(15,23,42,0.08)"
-                              : undefined
+                              : isFreshlyAddedCourse
+                                ? "0 0 0 1px rgba(34,197,94,0.45), 0 0 18px rgba(16,185,129,0.26), 0 10px 28px rgba(15,23,42,0.08)"
+                                : undefined
                         }}
                       >
                         <p className="text-sm font-semibold text-slate-900 dark:text-white">{session.course.name}</p>
@@ -5337,14 +5434,14 @@ function CalendarView({
             </div>
           </div>
 
-          <Panel className="bg-white/90 dark:bg-[#101317]/90">
+          <Panel className="min-h-0 bg-white/90 dark:bg-[#101317]/90">
             <div className="mb-2 flex items-center justify-between px-4 pt-2.5">
               <div>
                 <h3 className="text-base font-semibold">Tasks</h3>
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Drag into the schedule to time-block.</p>
               </div>
             </div>
-            <div className="calendar-scroll-area max-h-[84vh] overflow-auto px-2 pb-3">
+            <div className="calendar-scroll-area min-h-0 max-h-[84vh] overflow-auto px-2 pb-3">
               {courses
                 .filter((course) => !course.archived)
                 .map((course) => {

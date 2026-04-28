@@ -50,9 +50,12 @@ export function OnboardingTour({
 
     window.addEventListener("resize", refresh);
     window.addEventListener("scroll", refresh, true);
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(refresh) : null;
+    resizeObserver?.observe(targetElement);
     return () => {
       window.removeEventListener("resize", refresh);
       window.removeEventListener("scroll", refresh, true);
+      resizeObserver?.disconnect();
     };
   }, [active, step, targetElement]);
 
@@ -96,7 +99,7 @@ export function OnboardingTour({
   if (!active || !step) return null;
 
   return (
-    <div className="pointer-events-auto fixed inset-0 z-[700]">
+    <div className="pointer-events-none fixed inset-0 z-[700]">
       {rect ? (
         <>
           <div

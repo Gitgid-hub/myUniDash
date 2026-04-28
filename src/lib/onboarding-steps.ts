@@ -4,34 +4,24 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
   {
     id: "welcome",
     title: "Welcome to School OS",
-    body: "This quick tour shows the core flow. It takes under a minute and you can skip anytime.",
+    body: "This quick tour sets up your semester flow: degree, course, calendar hours, then planning views.",
     action: "none",
     placement: "auto",
     ensureView: "dashboard"
   },
   {
-    id: "account",
+    id: "settings",
     title: "Open settings",
-    body: "Use Settings for your account details, sign out, and essential preferences.",
+    body: "Start from Settings to configure your degree before adding courses.",
     targetSelector: "[data-onboarding='settings-button']",
     action: "none",
     placement: "bottom",
     ensureView: "dashboard"
   },
   {
-    id: "courses",
-    title: "Add your courses",
-    body: "Use this Add button to create your course list manually.",
-    targetSelector: "[data-onboarding='courses-add-button']",
-    action: "clickTarget",
-    placement: "right",
-    ensureView: "dashboard",
-    ensureUtilityOpen: false
-  },
-  {
     id: "degree",
     title: "Choose your degree",
-    body: "Pick your degree in Settings before importing courses. Then use Open HUJI import to add relevant courses.",
+    body: "Search your degree and press Load roadmap to open your degree course list.",
     targetSelector: "[data-onboarding='settings-degree-panel']",
     action: "none",
     placement: "left",
@@ -41,19 +31,37 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     ensureCatalogPickerOpen: false
   },
   {
-    id: "calendar",
-    title: "Open the calendar",
-    body: "Go to Calendar to see sessions and plan your week.",
-    targetSelector: "[data-onboarding='nav-calendar']",
-    action: "clickTarget",
+    id: "add-course",
+    title: "Add one course",
+    body: "From the roadmap list, add one course you are taking this semester.",
+    targetSelector: "[data-onboarding='courses-add-button']",
+    action: "none",
+    placement: "right",
+    ensureView: "courses"
+  },
+  {
+    id: "calendar-hours",
+    title: "Calendar course hours",
+    body: "Now check the course in Calendar with its day, hour, and location. If Tirgul options appear, choose one.",
+    targetSelector: "[data-onboarding='calendar-week-grid']",
+    action: "none",
     placement: "right",
     ensureView: "calendar"
   },
   {
+    id: "calendar-weekly",
+    title: "Weekly overview",
+    body: "Use Week view as your main scheduling overview for classes, overlaps, and planning.",
+    targetSelector: "[data-onboarding='calendar-week-grid']",
+    action: "none",
+    placement: "bottom",
+    ensureView: "calendar"
+  },
+  {
     id: "calendar-day",
-    title: "Switch to day view",
-    body: "Use Day mode when you want detailed hour-by-hour focus.",
-    targetSelector: "[data-onboarding='calendar-day-button']",
+    title: "Daily focus",
+    body: "This is your daily planner. Drag a task from the right Tasks list into a time slot to book it and see the green booked indicator.",
+    targetSelector: "[data-onboarding='calendar-day-planner']",
     action: "clickTarget",
     placement: "bottom",
     ensureView: "calendar"
@@ -70,48 +78,16 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
   {
     id: "kanban",
     title: "Kanban board",
-    body: "Kanban gives you a board view of tasks by stage, so you can move work from planned to done with clear focus.",
+    body: "Kanban gives a board view of tasks by stage so you can move work from planned to done.",
     targetSelector: "[data-onboarding='nav-kanban']",
     action: "clickTarget",
     placement: "right",
     ensureView: "kanban"
   },
   {
-    id: "guide",
-    title: "Open the guide",
-    body: "Use Guide to find keyboard shortcuts and replay onboarding anytime.",
-    targetSelector: "[data-onboarding='guide-button']",
-    action: "none",
-    placement: "bottom",
-    ensureView: "dashboard",
-    ensureUtilityOpen: false
-  },
-  {
-    id: "settings-feature",
-    title: "Open settings",
-    body: "Next, open Settings to send product feedback and feature requests.",
-    targetSelector: "[data-onboarding='settings-button']",
-    action: "none",
-    placement: "bottom",
-    ensureView: "dashboard",
-    ensureUtilityOpen: false,
-    ensureSettingsOpen: false
-  },
-  {
-    id: "feature-request",
-    title: "Send feature requests",
-    body: "Open Settings and use this box to send missing features with screenshots.",
-    targetSelector: "[data-onboarding='feature-request-panel']",
-    action: "none",
-    placement: "left",
-    ensureView: "dashboard",
-    ensureUtilityOpen: false,
-    ensureSettingsOpen: true
-  },
-  {
     id: "done",
     title: "You're ready",
-    body: "That is the core workflow. You can replay this tour anytime from Guide.",
+    body: "Great — your semester flow is ready. You can replay onboarding anytime from Guide.",
     action: "none",
     placement: "auto",
     ensureView: "dashboard",
