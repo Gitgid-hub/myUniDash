@@ -94,6 +94,7 @@ const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gma
 const MAX_FEATURE_REQUEST_SCREENSHOTS = 3;
 const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
+const UNRELATED_SESSIONS_COURSE_ID = "course-unrelated-sessions";
 type CatalogDegreeOption = {
   id: string;
   roadmapCode: string;
@@ -1761,11 +1762,16 @@ export function SchoolOS() {
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
         event.stopPropagation();
-        setSessionDeletePrompt({
-          courseId: selectedCalendarSession.courseId,
-          meetingId: selectedCalendarSession.meetingId,
-          anchorDate: selectedCalendarSession.anchorDate
-        });
+        const recurrenceCadence = selectedSessionMeeting.recurrence?.cadence ?? "weekly";
+        if (recurrenceCadence === "weekly") {
+          setSessionDeletePrompt({
+            courseId: selectedCalendarSession.courseId,
+            meetingId: selectedCalendarSession.meetingId,
+            anchorDate: selectedCalendarSession.anchorDate
+          });
+        } else {
+          deleteSelectedSession("single");
+        }
         return;
       }
       if (!event.metaKey && !event.ctrlKey && (event.key.toLowerCase() === "n" || event.key === "מ")) {
@@ -2457,6 +2463,7 @@ export function SchoolOS() {
                   : undefined
               }
               onUpdateCourse={updateCourseWithUndo}
+              onAddCourse={addCourse}
               onAddWorkBlock={addWorkBlockWithUndo}
               onUpdateWorkBlock={updateWorkBlockWithUndo}
               onDeleteWorkBlock={deleteWorkBlockWithUndo}
@@ -4020,6 +4027,7 @@ function CalendarView({
   onClearSessionSelection,
   selectedSession,
   onUpdateCourse,
+  onAddCourse,
   onAddWorkBlock,
   onUpdateWorkBlock,
   onDeleteWorkBlock,
@@ -4042,6 +4050,20 @@ function CalendarView({
   onClearSessionSelection?: () => void;
   selectedSession?: { courseId: string; meetingId: string; anchorDate: Date };
   onUpdateCourse: (course: Partial<Course> & { id: string }) => void;
+  onAddCourse: (course: {
+    id?: string;
+    name: string;
+    code: string;
+    source?: string;
+    externalCourseId?: string;
+    catalogLastSyncedAt?: string;
+    color: string;
+    instructor?: string;
+    notes?: string;
+    meetings?: Course["meetings"];
+    progressMode?: "manual" | "computed";
+    manualProgress?: number;
+  }) => void;
   onAddWorkBlock: (block: Omit<WorkBlock, "id" | "createdAt">) => void;
   onUpdateWorkBlock: (block: Partial<WorkBlock> & { id: string }) => void;
   onDeleteWorkBlock: (id: string) => void;
@@ -4061,6 +4083,10 @@ function CalendarView({
   newlyAddedCourseId?: string | null;
 }) {
   const visibleCourses = useMemo(() => courses.filter((course) => visibleCourseIds.includes(course.id)), [courses, visibleCourseIds]);
+  const unrelatedSessionsCourse = useMemo(
+    () => courses.find((course) => course.id === UNRELATED_SESSIONS_COURSE_ID),
+    [courses]
+  );
   const courseMap = useMemo(() => Object.fromEntries(courses.map((course) => [course.id, course])), [courses]);
   const bookedBlockByTaskId = useMemo(() => buildBookedBlockByTaskId(workBlocks), [workBlocks]);
   const tasksByCourseId = useMemo(() => {
@@ -4480,7 +4506,7 @@ function CalendarView({
     }
     const start = formatHourMinutes(creatingSession.startMinutes);
     const end = formatHourMinutes(creatingSession.endMinutes);
-    const defaultCourseId = visibleCourses[0]?.id ?? courses[0]?.id ?? "";
+    const defaultCourseId = unrelatedSessionsCourse?.id ?? UNRELATED_SESSIONS_COURSE_ID;
     setQuickCreateDraft({
       mode: "create",
       date: creatingSession.date,
@@ -5067,7 +5093,7 @@ function CalendarView({
                       event.currentTarget.getBoundingClientRect(),
                       draggingSession.durationMinutes,
                       undefined,
-                      80,
+                      WEEK_TIMELINE_ROW_PX,
                       pointerOffsetMinutes
                     );
                     setDragPreview({ date, ...slot });
@@ -5083,7 +5109,7 @@ function CalendarView({
                       event.currentTarget.getBoundingClientRect(),
                       draggingSession.durationMinutes,
                       undefined,
-                      80,
+                      WEEK_TIMELINE_ROW_PX,
                       pointerOffsetMinutes
                     );
                     const course = courses.find((item) => item.id === draggingSession.courseId);
@@ -5154,6 +5180,8 @@ function CalendarView({
                     const endHour = parseTimeValue(session.meeting.end);
                     const top = Math.max(0, (startHour - timelineHours[0]) * WEEK_TIMELINE_ROW_PX);
                     const height = Math.max(28, (endHour - startHour) * WEEK_TIMELINE_ROW_PX);
+                    const isPrivateSession = session.course.id === UNRELATED_SESSIONS_COURSE_ID;
+                    const privateTitle = session.meeting.title?.trim() || "New session";
                     const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
                     const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
                     const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
@@ -5221,8 +5249,12 @@ function CalendarView({
                                 : undefined
                         }}
                       >
-                        <p className="truncate font-semibold text-slate-900 dark:text-white">{session.course.name}</p>
-                        <p className="truncate text-slate-700 dark:text-white/95">{session.meeting.title || formatSessionType(session.meeting.type)}</p>
+                        <p className="truncate font-semibold text-slate-900 dark:text-white">
+                          {isPrivateSession ? privateTitle : session.course.name}
+                        </p>
+                        <p className="truncate text-slate-700 dark:text-white/95">
+                          {isPrivateSession ? "Private" : (session.meeting.title || formatSessionType(session.meeting.type))}
+                        </p>
                         <p className="mt-1 text-[11px] text-slate-600 dark:text-white/90">{session.meeting.start} - {session.meeting.end}</p>
                         {session.meeting.location && (
                           <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-slate-600 dark:text-white/90">
@@ -5880,6 +5912,8 @@ function CalendarView({
                     const endHour = parseTimeValue(session.meeting.end);
                     const top = Math.max(0, (startHour - timelineHours[0]) * dayHourHeight);
                     const height = Math.max(28, (endHour - startHour) * dayHourHeight);
+                    const isPrivateSession = session.course.id === UNRELATED_SESSIONS_COURSE_ID;
+                    const privateTitle = session.meeting.title?.trim() || "New session";
                     const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
                     const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
                     const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
@@ -5946,8 +5980,12 @@ function CalendarView({
                                 : undefined
                         }}
                       >
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{session.course.name}</p>
-                        <p className="text-xs text-slate-700 dark:text-white/95">{session.meeting.title || formatSessionType(session.meeting.type)}</p>
+                        <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                          {isPrivateSession ? privateTitle : session.course.name}
+                        </p>
+                        <p className="text-xs text-slate-700 dark:text-white/95">
+                          {isPrivateSession ? "Private" : (session.meeting.title || formatSessionType(session.meeting.type))}
+                        </p>
                         <p className="text-xs text-slate-700 dark:text-white/90">{session.meeting.start} - {session.meeting.end}</p>
                         {session.meeting.location && <p className="text-xs text-slate-700 dark:text-white/90">{session.meeting.location}</p>}
                       </button>
@@ -6253,7 +6291,10 @@ function CalendarView({
                   onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, courseId: event.target.value } : curr)}
                   className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/[0.05]"
                 >
-                  {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+                  <option value={UNRELATED_SESSIONS_COURSE_ID}>Unrelated (private session)</option>
+                  {courses
+                    .filter((course) => course.id !== UNRELATED_SESSIONS_COURSE_ID)
+                    .map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
                 </select>
                 <select
                   value={quickCreateDraft.sessionType}
@@ -6327,7 +6368,35 @@ function CalendarView({
               <Button variant="ghost" onClick={() => { setQuickCreateDraft(null); setQuickCreateAnchor(null); }}>Cancel</Button>
               <Button
                 onClick={() => {
+                  const meeting = buildCourseMeeting({
+                    day: getWeekDayFromDate(quickCreateDraft.date),
+                    start: quickCreateDraft.start,
+                    end: quickCreateDraft.end,
+                    anchorDate: formatDateKey(quickCreateDraft.date),
+                    title: quickCreateDraft.title,
+                    location: quickCreateDraft.location,
+                    notes: "",
+                    type: quickCreateDraft.sessionType,
+                    isAllDay: quickCreateDraft.isAllDay,
+                    cadence: quickCreateDraft.cadence,
+                    interval: 1,
+                    repeatDays: quickCreateDraft.repeatDays,
+                    until: "",
+                    count: ""
+                  });
                   const course = courses.find((c) => c.id === quickCreateDraft.courseId);
+                  if (!course && quickCreateDraft.mode !== "edit" && quickCreateDraft.courseId === UNRELATED_SESSIONS_COURSE_ID) {
+                    onAddCourse({
+                      id: UNRELATED_SESSIONS_COURSE_ID,
+                      name: "Unrelated sessions",
+                      code: "PRIVATE",
+                      color: "#64748b",
+                      meetings: [meeting]
+                    });
+                    setQuickCreateDraft(null);
+                    setQuickCreateAnchor(null);
+                    return;
+                  }
                   if (!course) return;
                   if (quickCreateDraft.mode === "edit" && quickCreateDraft.meetingId) {
                     onUpdateCourse({
@@ -6358,22 +6427,6 @@ function CalendarView({
                       )
                     });
                   } else {
-                    const meeting = buildCourseMeeting({
-                      day: getWeekDayFromDate(quickCreateDraft.date),
-                      start: quickCreateDraft.start,
-                      end: quickCreateDraft.end,
-                      anchorDate: formatDateKey(quickCreateDraft.date),
-                      title: quickCreateDraft.title,
-                      location: quickCreateDraft.location,
-                      notes: "",
-                      type: quickCreateDraft.sessionType,
-                      isAllDay: quickCreateDraft.isAllDay,
-                      cadence: quickCreateDraft.cadence,
-                      interval: 1,
-                      repeatDays: quickCreateDraft.repeatDays,
-                      until: "",
-                      count: ""
-                    });
                     onUpdateCourse({ id: course.id, meetings: [...course.meetings, meeting] });
                   }
                   setQuickCreateDraft(null);
