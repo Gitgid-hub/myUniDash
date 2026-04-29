@@ -99,10 +99,7 @@ type CatalogDegreeOption = {
   roadmapCode: string;
   label: string;
 };
-const DEFAULT_CATALOG_DEGREES: CatalogDegreeOption[] = [
-  { id: "biology", roadmapCode: "570-4010", label: "Biology (HUJI 570-4010)" },
-  { id: "linguistics", roadmapCode: "181-1751", label: "Linguistics (HUJI 181-1751)" }
-];
+const DEFAULT_CATALOG_DEGREES: CatalogDegreeOption[] = [];
 const CATALOG_DEGREE_STORAGE_KEY = "school-os:catalog-degree:v1";
 
 function dedupeLabelSegments(value: string): string {
@@ -303,6 +300,103 @@ function toLocalDateInput(iso?: string): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function toLocalDateTimeInput(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function parseNaturalDeadlineToLocalInput(raw: string): string | null {
+  const text = raw
+    .trim()
+    .replace(/\u00A0|\u202F/g, " ")
+    .replace(/[，]/g, ",")
+    .replace(/\s+/g, " ");
+  if (!text) return null;
+  const withoutWeekdayPrefix = text.replace(/^[^\d]*?(?=\d)/, "").trim();
+
+  const monthNamePattern = withoutWeekdayPrefix.match(
+    /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\s+(\d{4})(?:,\s*|\s+)(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?$/
+  );
+  if (monthNamePattern) {
+    const day = Number(monthNamePattern[1]);
+    const monthToken = monthNamePattern[2].toLowerCase();
+    const year = Number(monthNamePattern[3]);
+    let hours = Number(monthNamePattern[4]);
+    const minutes = Number(monthNamePattern[5]);
+    const ampm = monthNamePattern[6]?.toUpperCase();
+    const monthMap: Record<string, number> = {
+      january: 1,
+      jan: 1,
+      february: 2,
+      feb: 2,
+      march: 3,
+      mar: 3,
+      april: 4,
+      apr: 4,
+      may: 5,
+      june: 6,
+      jun: 6,
+      july: 7,
+      jul: 7,
+      august: 8,
+      aug: 8,
+      september: 9,
+      sep: 9,
+      sept: 9,
+      october: 10,
+      oct: 10,
+      november: 11,
+      nov: 11,
+      december: 12,
+      dec: 12
+    };
+    const month = monthMap[monthToken];
+    if (!month) return null;
+    if (ampm === "PM" && hours < 12) hours += 12;
+    if (ampm === "AM" && hours === 12) hours = 0;
+    if (year < 1900 || day < 1 || day > 31 || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+    const parsed = new Date(year, month - 1, day, hours, minutes, 0, 0);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return toLocalDateTimeInput(parsed);
+  }
+
+  const direct = new Date(text);
+  if (!Number.isNaN(direct.getTime())) {
+    return toLocalDateTimeInput(direct);
+  }
+
+  const slashPattern = text.match(
+    /^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/
+  );
+  if (!slashPattern) return null;
+
+  let day = Number(slashPattern[1]);
+  let month = Number(slashPattern[2]);
+  const year = Number(slashPattern[3].length === 2 ? `20${slashPattern[3]}` : slashPattern[3]);
+  let hours = slashPattern[4] ? Number(slashPattern[4]) : 12;
+  const minutes = slashPattern[5] ? Number(slashPattern[5]) : 0;
+  const ampm = slashPattern[6]?.toUpperCase();
+
+  if (month > 12 && day <= 12) {
+    const swap = day;
+    day = month;
+    month = swap;
+  }
+  if (ampm === "PM" && hours < 12) hours += 12;
+  if (ampm === "AM" && hours === 12) hours = 0;
+  if (year < 1900 || month < 1 || month > 12 || day < 1 || day > 31 || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+
+  const parsed = new Date(year, month - 1, day, hours, minutes, 0, 0);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return toLocalDateTimeInput(parsed);
 }
 
 function getNextScheduledBlock(taskId: string, workBlocks: WorkBlock[]): WorkBlock | undefined {
@@ -525,9 +619,9 @@ export function SchoolOS() {
   const [catalogDegreeOptions, setCatalogDegreeOptions] = useState<CatalogDegreeOption[]>(DEFAULT_CATALOG_DEGREES);
   const degreeLoadRequestSeqRef = useRef(0);
   const [catalogDegree, setCatalogDegree] = useState<string>(() => {
-    if (typeof window === "undefined") return DEFAULT_CATALOG_DEGREES[0]?.id ?? "biology";
+    if (typeof window === "undefined") return "";
     const saved = window.localStorage.getItem(CATALOG_DEGREE_STORAGE_KEY);
-    return saved && saved.length > 0 ? saved : (DEFAULT_CATALOG_DEGREES[0]?.id ?? "biology");
+    return saved && saved.length > 0 ? saved : "";
   });
   const [onboardingActive, setOnboardingActive] = useState(false);
   const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
@@ -535,6 +629,7 @@ export function SchoolOS() {
   const [onboardingActiveCourseCountAtStart, setOnboardingActiveCourseCountAtStart] = useState(0);
   const [onboardingDemoTaskId, setOnboardingDemoTaskId] = useState<string | null>(null);
   const [freshlyAddedCourseId, setFreshlyAddedCourseId] = useState<string | null>(null);
+  const [onboardingRoadmapLoaded, setOnboardingRoadmapLoaded] = useState(false);
   const [pendingSessionChoiceFlow, setPendingSessionChoiceFlow] = useState<{
     courseId: string;
     courseName: string;
@@ -710,6 +805,25 @@ export function SchoolOS() {
     return activeCourses;
   }, [activeCourses, archivedCourses, courseListMode]);
   const onboardingStep = onboardingActive ? MINIMAL_CORE_ONBOARDING_STEPS[onboardingStepIndex] ?? null : null;
+  const onboardingAddedCourseCount = useMemo(
+    () => Math.max(0, activeCourses.length - onboardingActiveCourseCountAtStart),
+    [activeCourses.length, onboardingActiveCourseCountAtStart]
+  );
+  const onboardingCommittedCourseId = useMemo(() => {
+    if (pendingSessionChoiceFlow) return null;
+    if (onboardingAddedCourseCount <= 0) return null;
+    return activeCourses.find((course) => course.meetings.length > 0)?.id ?? null;
+  }, [activeCourses, onboardingAddedCourseCount, pendingSessionChoiceFlow]);
+  const onboardingStepForTour = useMemo(() => {
+    if (!onboardingStep) return null;
+    if (onboardingStep.id !== "add-course") return onboardingStep;
+    if (!onboardingCommittedCourseId) return onboardingStep;
+    return {
+      ...onboardingStep,
+      body: "1 course selected. You can continue adding courses after onboarding is complete."
+    };
+  }, [onboardingCommittedCourseId, onboardingStep]);
+  const onboardingCatalogLocked = onboardingActive && onboardingStep?.id === "add-course" && Boolean(onboardingCommittedCourseId);
   const onboardingCourseGlowId =
     onboardingActive && onboardingStep?.id === "calendar-hours" ? freshlyAddedCourseId : null;
   const selectedCourse =
@@ -732,6 +846,9 @@ export function SchoolOS() {
     setOnboardingActiveCourseCountAtStart(activeCourseCount);
     setOnboardingStepIndex(0);
     setOnboardingTargetElement(null);
+    setFreshlyAddedCourseId(null);
+    setOnboardingRoadmapLoaded(false);
+    setPendingSessionChoiceFlow(null);
     setOnboardingActive(true);
   }, [state.courses]);
 
@@ -755,6 +872,13 @@ export function SchoolOS() {
       });
       return;
     }
+    if (step?.id === "degree" && !onboardingRoadmapLoaded) {
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Load your roadmap first, then press the right arrow to continue."
+      });
+      return;
+    }
     if (step?.id === "calendar-hours" && !hasAtLeastOneScheduledMeeting) {
       pushSchoolOsToast({
         kind: "error",
@@ -775,12 +899,42 @@ export function SchoolOS() {
       return;
     }
     setOnboardingStepIndex((n) => Math.min(lastIdx, n + 1));
-  }, [finishOnboarding, onboardingActive, onboardingActiveCourseCountAtStart, onboardingStepIndex, pendingSessionChoiceFlow, state.courses]);
+  }, [finishOnboarding, onboardingActive, onboardingActiveCourseCountAtStart, onboardingRoadmapLoaded, onboardingStepIndex, pendingSessionChoiceFlow, state.courses]);
 
   const retreatOnboarding = useCallback(() => {
     if (!onboardingActive) return;
-    setOnboardingStepIndex((n) => Math.max(0, n - 1));
-  }, [onboardingActive]);
+    const targetIndex = Math.max(0, onboardingStepIndex - 1);
+    const targetStep = MINIMAL_CORE_ONBOARDING_STEPS[targetIndex];
+    const shouldReturnToCatalog = targetStep?.id === "add-course";
+    if (shouldReturnToCatalog) {
+      const revertCourseId = pendingSessionChoiceFlow?.courseId ?? freshlyAddedCourseId;
+      const hasCommittedFirstCourse = Boolean(onboardingCommittedCourseId);
+      if (revertCourseId && !hasCommittedFirstCourse) {
+        dispatch({ type: "delete-course", payload: revertCourseId });
+        setPendingSessionChoiceFlow(null);
+        setFreshlyAddedCourseId(null);
+      }
+      dispatch({ type: "set-view", payload: "courses" });
+      setIsSettingsOpen(false);
+      setIsCatalogPickerOpen(true);
+      setIsCourseActionsOpen(false);
+      setCatalogViewMode("search");
+      setCatalogQuery("");
+    }
+    setOnboardingStepIndex(targetIndex);
+  }, [dispatch, freshlyAddedCourseId, onboardingActive, onboardingCommittedCourseId, onboardingStepIndex, pendingSessionChoiceFlow]);
+
+  useEffect(() => {
+    if (!onboardingActive || onboardingStep?.id !== "add-course") return;
+    // Move to calendar-hours right after first-course selection while it's still in-progress.
+    if (onboardingAddedCourseCount <= 0 || onboardingCommittedCourseId) return;
+    const chooseHoursStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "calendar-hours");
+    setCalendarMode("week");
+    dispatch({ type: "set-view", payload: "calendar" });
+    if (chooseHoursStepIndex >= 0) {
+      setOnboardingStepIndex(chooseHoursStepIndex);
+    }
+  }, [dispatch, onboardingActive, onboardingAddedCourseCount, onboardingCommittedCourseId, onboardingStep?.id]);
 
   const getAuthHeader = useCallback(async (): Promise<Record<string, string>> => {
     const supabase = getSupabaseClient();
@@ -1006,7 +1160,11 @@ export function SchoolOS() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem(CATALOG_DEGREE_STORAGE_KEY, catalogDegree);
+    if (catalogDegree) {
+      window.localStorage.setItem(CATALOG_DEGREE_STORAGE_KEY, catalogDegree);
+    } else {
+      window.localStorage.removeItem(CATALOG_DEGREE_STORAGE_KEY);
+    }
   }, [catalogDegree]);
 
   const selectedCatalogDegreeOption = useMemo(
@@ -1044,12 +1202,9 @@ export function SchoolOS() {
       if (trimmedQuery.length > 0) {
         setCatalogDegreeOptions(normalized);
       } else {
-        const mergedMap = new Map<string, CatalogDegreeOption>();
-        for (const base of DEFAULT_CATALOG_DEGREES) mergedMap.set(base.id, base);
-        for (const degree of normalized) mergedMap.set(degree.id, degree);
-        setCatalogDegreeOptions([...mergedMap.values()]);
-        if (![...mergedMap.keys()].includes(catalogDegree)) {
-          setCatalogDegree(DEFAULT_CATALOG_DEGREES[0]?.id ?? "biology");
+        setCatalogDegreeOptions(normalized);
+        if (catalogDegree && !normalized.some((degree) => degree.id === catalogDegree)) {
+          setCatalogDegree("");
         }
       }
     } catch (error) {
@@ -1123,18 +1278,6 @@ export function SchoolOS() {
     }
     finishOnboarding(true);
   }, [finishOnboarding, pendingSessionChoiceFlow, state.courses]);
-
-  useEffect(() => {
-    if (!onboardingActive || onboardingStep?.id !== "add-course") return;
-    const hasAddedCourseDuringOnboarding = state.courses.filter((course) => !course.archived).length > onboardingActiveCourseCountAtStart;
-    if (!hasAddedCourseDuringOnboarding) return;
-    const chooseHoursStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "calendar-hours");
-    setCalendarMode("week");
-    dispatch({ type: "set-view", payload: "calendar" });
-    if (chooseHoursStepIndex >= 0) {
-      setOnboardingStepIndex(chooseHoursStepIndex);
-    }
-  }, [dispatch, onboardingActive, onboardingActiveCourseCountAtStart, onboardingStep?.id, state.courses]);
 
   useEffect(() => {
     if (!onboardingActive || onboardingStep?.id !== "calendar-day") return;
@@ -1937,7 +2080,8 @@ export function SchoolOS() {
     }
   }, [addCourse, dispatch, getAuthHeader, state.courses]);
 
-  const loadDegreeRoadmapCourses = useCallback(async (degreeId: string, showToast = true): Promise<boolean> => {
+  const loadDegreeRoadmapCourses = useCallback(
+    async (degreeId: string, showToast = true, openCatalogPicker = true): Promise<boolean> => {
     const requestSeq = degreeLoadRequestSeqRef.current + 1;
     degreeLoadRequestSeqRef.current = requestSeq;
     setCatalogDegreeImporting(true);
@@ -1947,7 +2091,9 @@ export function SchoolOS() {
       setCatalogViewMode("roadmap");
       setCatalogResults(cachedCourses);
       setCatalogQuery("");
-      setIsCatalogPickerOpen(true);
+      if (openCatalogPicker) {
+        setIsCatalogPickerOpen(true);
+      }
       setIsCourseActionsOpen(false);
       setCatalogDegreeImporting(false);
       return true;
@@ -1979,7 +2125,9 @@ export function SchoolOS() {
       setCatalogViewMode("roadmap");
       setCatalogResults(courses);
       setCatalogQuery("");
-      setIsCatalogPickerOpen(true);
+      if (openCatalogPicker) {
+        setIsCatalogPickerOpen(true);
+      }
       setIsCourseActionsOpen(false);
       if (showToast) {
         pushSchoolOsToast({
@@ -2001,19 +2149,23 @@ export function SchoolOS() {
         setCatalogDegreeImporting(false);
       }
     }
-  }, [catalogDegreeOptions, getAuthHeader, readDegreeRoadmapCache, writeDegreeRoadmapCache]);
+  },
+    [catalogDegreeOptions, getAuthHeader, readDegreeRoadmapCache, writeDegreeRoadmapCache]
+  );
 
   const importFullDegreePlan = useCallback(async () => {
-    const loaded = await loadDegreeRoadmapCourses(catalogDegree, true);
+    const loaded = await loadDegreeRoadmapCourses(catalogDegree, true, !onboardingActive);
     if (!loaded) return;
+    if (onboardingActive) {
+      setOnboardingRoadmapLoaded(true);
+      pushSchoolOsToast({
+        kind: "success",
+        message: "Roadmap loaded. Press the right arrow to continue."
+      });
+      return;
+    }
     dispatch({ type: "set-view", payload: "courses" });
     setIsSettingsOpen(false);
-    if (onboardingActive) {
-      const addCourseStepIndex = MINIMAL_CORE_ONBOARDING_STEPS.findIndex((step) => step.id === "add-course");
-      if (addCourseStepIndex >= 0) {
-        setOnboardingStepIndex(addCourseStepIndex);
-      }
-    }
   }, [catalogDegree, dispatch, loadDegreeRoadmapCourses, onboardingActive]);
 
   const selectCatalogDegreeOption = useCallback((degree: CatalogDegreeOption) => {
@@ -2021,7 +2173,10 @@ export function SchoolOS() {
     setCatalogDegreeSearchQuery(degree.label);
     setIsCatalogDegreeOptionsOpen(false);
     setCatalogQuery("");
-  }, []);
+    if (onboardingActive) {
+      setOnboardingRoadmapLoaded(false);
+    }
+  }, [onboardingActive]);
 
   useEffect(() => {
     if (!isCatalogPickerOpen) return;
@@ -2769,7 +2924,7 @@ export function SchoolOS() {
 
       <OnboardingTour
         active={onboardingActive}
-        step={onboardingStep}
+        step={onboardingStepForTour}
         stepIndex={onboardingStepIndex}
         totalSteps={MINIMAL_CORE_ONBOARDING_STEPS.length}
         onPrevious={retreatOnboarding}
@@ -2972,7 +3127,16 @@ export function SchoolOS() {
 
       {isCatalogPickerOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-          <Panel data-onboarding="catalog-import-panel" className="w-full max-w-3xl bg-white/95 p-5 dark:bg-[#101317]/95">
+          <Panel
+            data-onboarding="catalog-import-panel"
+            className={`w-full max-w-3xl bg-white/95 p-5 dark:bg-[#101317]/95 ${
+              onboardingCatalogLocked ? "pointer-events-none select-none" : ""
+            }`}
+            aria-disabled={onboardingCatalogLocked}
+          >
+            {onboardingCatalogLocked ? (
+              <div className="pointer-events-none absolute inset-0 z-20 rounded-[inherit] bg-slate-300/38 backdrop-brightness-75 dark:bg-slate-900/42" />
+            ) : null}
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold">HUJI Catalog Import</h3>
@@ -4859,6 +5023,7 @@ function CalendarView({
             </div>
             {weekData.map(({ date, key, sessions }) => {
               const timed = layoutOverlappingEvents(sessions.filter((item) => !item.meeting.isAllDay));
+              const tentativeTimed = layoutOverlappingEvents((tentativeByDate[key] ?? []).filter((item) => !item.meeting.isAllDay));
               const dayWorkBlocks = (workBlocksByDate[key] ?? []).sort((a, b) => a.startAt.localeCompare(b.startAt));
               return (
                 <div
@@ -5067,13 +5232,13 @@ function CalendarView({
                       </button>
                     );
                   })}
-                  {(tentativeByDate[key] ?? [])
-                    .filter((item) => !item.meeting.isAllDay)
-                    .map((session) => {
+                  {tentativeTimed.map((session) => {
                       const startHour = parseTimeValue(session.meeting.start);
                       const endHour = parseTimeValue(session.meeting.end);
                       const top = Math.max(0, (startHour - timelineHours[0]) * WEEK_TIMELINE_ROW_PX);
                       const height = Math.max(28, (endHour - startHour) * WEEK_TIMELINE_ROW_PX);
+                      const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
+                      const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
                       return (
                         <button
                           key={`tentative-${session.instanceKey}`}
@@ -5081,10 +5246,13 @@ function CalendarView({
                           onClick={() => onPickTentativeOption?.(session.course.id)}
                           onMouseEnter={() => setHoveredTentativeOptionId(session.course.id)}
                           onMouseLeave={() => setHoveredTentativeOptionId((current) => (current === session.course.id ? null : current))}
-                          className="absolute left-[10px] right-[10px] z-[14] overflow-hidden rounded-2xl border-2 border-amber-400/80 bg-amber-100/35 px-3 py-2 text-start text-xs shadow-[0_0_0_1px_rgba(251,191,36,0.45),0_0_26px_rgba(251,191,36,0.45)] transition-all dark:bg-amber-400/15"
+                          className="absolute z-[14] overflow-hidden rounded-2xl border-2 border-amber-400/80 bg-amber-100/35 px-3 py-2 text-start text-xs shadow-[0_0_0_1px_rgba(251,191,36,0.45),0_0_26px_rgba(251,191,36,0.45)] transition-all dark:bg-amber-400/15"
                           style={{
                             top,
                             height,
+                            left: `calc(${session.column * overlapStepPct}% + 10px)`,
+                            width: `calc(${overlapWidthPct}% - 20px)`,
+                            zIndex: 14 + session.column,
                             opacity: hoveredTentativeOptionId && hoveredTentativeOptionId !== session.course.id ? 0.3 : 1,
                             transform: hoveredTentativeOptionId === session.course.id ? "scale(1.015)" : "scale(1)"
                           }}
@@ -6298,11 +6466,13 @@ function TaskComposer({
   const [courseId, setCourseId] = useState<string | "general" | "">(initialCourseId ?? "");
   const [priority, setPriority] = useState<TaskPriority>("medium");
   const [dueAt, setDueAt] = useState("");
+  const [dueAtHint, setDueAtHint] = useState<string | null>(null);
   const [isCommandHeld, setIsCommandHeld] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
   const [fileHint, setFileHint] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dueAtInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setCourseId(initialCourseId ?? "");
@@ -6369,6 +6539,17 @@ function TaskComposer({
       setSaving(false);
     }
   }, [courseId, description, dueAt, onClose, onSave, pendingFiles, priority, saving, title]);
+
+  const applyPastedDeadline = useCallback((pasted: string) => {
+    const parsed = parseNaturalDeadlineToLocalInput(pasted);
+    if (!parsed) {
+      setDueAtHint("Could not recognize date/time text. Try: Tuesday, 5 May 2026, 4:00 PM");
+      return false;
+    }
+    setDueAt(parsed);
+    setDueAtHint("Parsed pasted deadline text.");
+    return true;
+  }, []);
 
   useEffect(() => {
     function onWindowKeyDown(event: KeyboardEvent) {
@@ -6438,12 +6619,59 @@ function TaskComposer({
             disabled={!courseId}
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/5"
           />
-          <input
-            value={dueAt}
-            onChange={(event) => setDueAt(event.target.value)}
-            type="datetime-local"
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
-          />
+          <div className="space-y-1">
+            <input
+              ref={dueAtInputRef}
+              value={dueAt}
+              onChange={(event) => {
+                setDueAt(event.target.value);
+                if (dueAtHint) setDueAtHint(null);
+              }}
+              onPaste={(event) => {
+                const pasted = event.clipboardData.getData("text");
+                if (!pasted) return;
+                const handled = applyPastedDeadline(pasted);
+                if (handled) event.preventDefault();
+              }}
+              type="datetime-local"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const pasted = await navigator.clipboard.readText();
+                    if (!pasted) {
+                      setDueAtHint("Clipboard is empty.");
+                      return;
+                    }
+                    applyPastedDeadline(pasted);
+                    dueAtInputRef.current?.focus();
+                  } catch {
+                    setDueAtHint("Clipboard read blocked. Paste directly into the deadline field.");
+                  }
+                }}
+                className="text-xs text-sky-600 transition hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200"
+              >
+                Paste text deadline
+              </button>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                Example: Tuesday, 5 May 2026, 4:00 PM
+              </span>
+            </div>
+            {dueAtHint ? (
+              <p
+                className={`text-xs ${
+                  /could not|blocked|empty/i.test(dueAtHint)
+                    ? "text-amber-700 dark:text-amber-300"
+                    : "text-emerald-600 dark:text-emerald-300"
+                }`}
+              >
+                {dueAtHint}
+              </p>
+            ) : null}
+          </div>
           <select
             value={priority}
             onChange={(event) => setPriority(event.target.value as TaskPriority)}

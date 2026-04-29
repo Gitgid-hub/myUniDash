@@ -96,6 +96,16 @@ export function OnboardingTour({
     return { left: Math.round(left), top: Math.round(top), width };
   }, [rect, step, viewport.height, viewport.width]);
 
+  const committedCourseHint = useMemo(() => {
+    if (!step || step.id !== "add-course") return null;
+    const marker = "1 course selected.";
+    if (!step.body.startsWith(marker)) return null;
+    return {
+      lead: marker,
+      rest: step.body.slice(marker.length).trim()
+    };
+  }, [step]);
+
   if (!active || !step) return null;
 
   return (
@@ -157,7 +167,15 @@ export function OnboardingTour({
           Step {Math.min(stepIndex + 1, totalSteps)} of {totalSteps}
         </p>
         <h3 className="mt-1 text-base font-semibold">{step.title}</h3>
-        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{step.body}</p>
+        {committedCourseHint ? (
+          <p className="mt-2 text-sm text-slate-300">
+            <span className="font-semibold text-white">{committedCourseHint.lead}</span>
+            {" "}
+            {committedCourseHint.rest}
+          </p>
+        ) : (
+          <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{step.body}</p>
+        )}
 
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
           Use the arrows to move between onboarding steps.

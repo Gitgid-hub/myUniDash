@@ -37,7 +37,9 @@ export const MINIMAL_CORE_ONBOARDING_STEPS: OnboardingStep[] = [
     targetSelector: "[data-onboarding='courses-add-button']",
     action: "none",
     placement: "right",
-    ensureView: "courses"
+    ensureView: "courses",
+    ensureSettingsOpen: false,
+    ensureCatalogPickerOpen: true
   },
   {
     id: "calendar-hours",
