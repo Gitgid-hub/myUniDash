@@ -111,6 +111,11 @@ import {
 } from "@/lib/calendar-occurrences";
 import { CatchUpWeekNotReadyModal } from "@/components/catch-up-week-not-ready-modal";
 import { WeeklyCatchUpModal } from "@/components/weekly-catch-up-modal";
+import { getDemoWeeklyCatchupVirtualNow } from "@/lib/demo-weekly-catchup";
+import { isAdminEmail } from "@/lib/admin-emails";
+import { resolvePanoptoFolderUrl } from "@/lib/panopto-folder-url";
+import type { WorkspaceUserRow } from "@/lib/workspace-user-admin";
+import type { EarlyAccessRequestRow } from "@/lib/early-access-types";
 
 const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ className?: string }> }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -126,13 +131,8 @@ const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ class
 
 /** Survives remounts so “Class finished” only nags once per session instance. */
 const POST_SESSION_PROMPT_STORAGE_KEY = "school-os-post-session-prompt-dismissed:v1";
-const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gmail.com"]);
+/** Tasks with this tag are removed before each “Demo catch-up” run so QA can regenerate the same week (dedupe uses `catchup:…`). */
 const DEMO_WEEKLY_CATCHUP_TASK_TAG = "demo-weekly-catchup";
-
-function isCatchUpDemoUser(email: string | undefined | null): boolean {
-  if (!email) return false;
-  return ADMIN_EMAILS.has(email.trim().toLowerCase());
-}
 const MAX_FEATURE_REQUEST_SCREENSHOTS = 3;
 const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
@@ -615,6 +615,13 @@ export function SchoolOS() {
   const [adminRequestsLoading, setAdminRequestsLoading] = useState(false);
   const [adminRequestsError, setAdminRequestsError] = useState<string | null>(null);
   const [deletingRequestId, setDeletingRequestId] = useState<number | null>(null);
+  const [workspaceUsers, setWorkspaceUsers] = useState<WorkspaceUserRow[]>([]);
+  const [workspaceUsersLoading, setWorkspaceUsersLoading] = useState(false);
+  const [workspaceUsersError, setWorkspaceUsersError] = useState<string | null>(null);
+  const [earlyAccessRequests, setEarlyAccessRequests] = useState<EarlyAccessRequestRow[]>([]);
+  const [earlyAccessLoading, setEarlyAccessLoading] = useState(false);
+  const [earlyAccessError, setEarlyAccessError] = useState<string | null>(null);
+  const [grantingEarlyAccessEmail, setGrantingEarlyAccessEmail] = useState<string | null>(null);
   const [selectedRequestScreenshot, setSelectedRequestScreenshot] = useState<{ dataUrl: string; alt: string } | null>(null);
   const [doneFeatureRequestMap, setDoneFeatureRequestMap] = useState<Record<string, string>>({});
   const [gitSyncStatus, setGitSyncStatus] = useState<{ available: boolean; clean: boolean; ahead: number; checking: boolean }>({
@@ -1019,11 +1026,7 @@ export function SchoolOS() {
     }
   }, []);
 
-  const isAdmin = useMemo(() => {
-    const email = user?.email?.toLowerCase();
-    if (!email) return false;
-    return ADMIN_EMAILS.has(email);
-  }, [user?.email]);
+  const isAdmin = useMemo(() => isAdminEmail(user?.email), [user?.email]);
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => (item.id === "user-requests" ? isAdmin : true)),
     [isAdmin]
@@ -1047,6 +1050,73 @@ export function SchoolOS() {
       setAdminRequestsLoading(false);
     }
   }, [getAuthHeader, isAdmin]);
+
+  const loadWorkspaceUsers = useCallback(async () => {
+    if (!isAdmin) return;
+    setWorkspaceUsersLoading(true);
+    setWorkspaceUsersError(null);
+    try {
+      const headers = await getAuthHeader();
+      const res = await fetch("/api/admin/workspace-users", { headers, cache: "no-store" });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to load accounts.");
+      }
+      setWorkspaceUsers(payload.users ?? []);
+    } catch (error) {
+      setWorkspaceUsersError(error instanceof Error ? error.message : "Failed to load accounts.");
+    } finally {
+      setWorkspaceUsersLoading(false);
+    }
+  }, [getAuthHeader, isAdmin]);
+
+  const loadEarlyAccessRequests = useCallback(async () => {
+    if (!isAdmin) return;
+    setEarlyAccessLoading(true);
+    setEarlyAccessError(null);
+    try {
+      const headers = await getAuthHeader();
+      const res = await fetch("/api/admin/early-access-requests", { headers, cache: "no-store" });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Failed to load early access requests.");
+      }
+      setEarlyAccessRequests(payload.requests ?? []);
+    } catch (error) {
+      setEarlyAccessError(error instanceof Error ? error.message : "Failed to load early access requests.");
+    } finally {
+      setEarlyAccessLoading(false);
+    }
+  }, [getAuthHeader, isAdmin]);
+
+  const grantEarlyAccess = useCallback(
+    async (email: string) => {
+      if (!isAdmin) return;
+      setGrantingEarlyAccessEmail(email);
+      setEarlyAccessError(null);
+      try {
+        const headers = {
+          "Content-Type": "application/json",
+          ...(await getAuthHeader())
+        };
+        const res = await fetch("/api/admin/early-access-grant", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ email })
+        });
+        const payload = await res.json();
+        if (!res.ok) {
+          throw new Error(payload.error ?? "Failed to grant access.");
+        }
+        await loadEarlyAccessRequests();
+      } catch (error) {
+        setEarlyAccessError(error instanceof Error ? error.message : "Failed to grant access.");
+      } finally {
+        setGrantingEarlyAccessEmail(null);
+      }
+    },
+    [getAuthHeader, isAdmin, loadEarlyAccessRequests]
+  );
 
   const deleteAdminFeatureRequest = useCallback(async (requestId: number) => {
     if (!isAdmin) return;
@@ -1154,6 +1224,16 @@ export function SchoolOS() {
     if (!isSettingsOpen || !isAdmin) return;
     void loadAdminFeatureRequests();
   }, [isAdmin, isSettingsOpen, loadAdminFeatureRequests]);
+
+  useEffect(() => {
+    if (!isSettingsOpen || !isAdmin) return;
+    void loadWorkspaceUsers();
+  }, [isAdmin, isSettingsOpen, loadWorkspaceUsers]);
+
+  useEffect(() => {
+    if (!isSettingsOpen || !isAdmin) return;
+    void loadEarlyAccessRequests();
+  }, [isAdmin, isSettingsOpen, loadEarlyAccessRequests]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1797,7 +1877,9 @@ export function SchoolOS() {
       const occ = listCatchUpOccurrences(activeCourses, start, end);
       const weekSunday = startOfWeekGrid(now, "sunday");
       const triggerAt = getLastThursdaySessionEndInWeek(occ, weekSunday);
-      if (now.getTime() < triggerAt.getTime()) return;
+      const beforeThursday = now.getTime() < triggerAt.getTime();
+      if (beforeThursday) return;
+      if (weeklyCatchUpDemo) return;
       dispatch({ type: "set-catch-up-prompt-week", payload: weekKey });
       // Rolling forward to a new academic week — drop submitted locks for older weeks so they re-open as editable history.
       dispatch({ type: "prune-catch-up-submitted-weeks", payload: { beforeWeekKey: weekKey } });
@@ -1814,7 +1896,7 @@ export function SchoolOS() {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [ready, activeCourses, state.ui?.catchUpPromptedWeekKey, dispatch]);
+  }, [ready, activeCourses, state.ui?.catchUpPromptedWeekKey, dispatch, weeklyCatchUpDemo]);
 
   const submittedCatchUpWeeks = useMemo(
     () => new Set(state.ui?.catchUpSubmittedWeekKeys ?? []),
@@ -1823,14 +1905,16 @@ export function SchoolOS() {
   const isWeekKeySubmitted = useCallback((weekKey: string) => submittedCatchUpWeeks.has(weekKey), [submittedCatchUpWeeks]);
 
   const purgeWeeklyCatchUpDemoTasks = useCallback(() => {
-    const ids = weeklyCatchUpDemoTaskIdsRef.current;
-    if (ids.length === 0) return;
+    const ids = new Set<string>(weeklyCatchUpDemoTaskIdsRef.current);
+    for (const t of state.tasks) {
+      if ((t.tags ?? []).includes(DEMO_WEEKLY_CATCHUP_TASK_TAG)) ids.add(t.id);
+    }
     weeklyCatchUpDemoTaskIdsRef.current = [];
     setWeeklyCatchUpDemo(false);
     for (const id of ids) {
       dispatch({ type: "delete-task", payload: id });
     }
-  }, [dispatch]);
+  }, [dispatch, state.tasks]);
 
   const handleWeeklyCatchUpRequestFromCalendar = useCallback(
     (weekAnchorDate: Date) => {
@@ -1856,28 +1940,21 @@ export function SchoolOS() {
   );
 
   const handleDemoWeeklyCatchUp = useCallback(() => {
-    const candidates: Date[] = [];
-    const base = selectedCalendarDate;
-    for (let w = 0; w < 16; w++) {
-      const d = new Date(base);
-      d.setDate(d.getDate() - 7 * w);
-      const { start, end } = getAcademicWeekSunThu(d);
-      const occ = listCatchUpOccurrences(activeCourses, start, end);
-      if (occ.length > 0) {
-        candidates.push(start);
-      }
-    }
-    if (candidates.length === 0) {
+    purgeWeeklyCatchUpDemoTasks();
+    const demoAnchor = getDemoWeeklyCatchupVirtualNow();
+    const { start, end } = getAcademicWeekSunThu(demoAnchor);
+    const occ = listCatchUpOccurrences(activeCourses, start, end);
+    if (occ.length === 0) {
       pushSchoolOsToast({
         kind: "error",
-        message: "Demo: no recent weeks with Sun–Thu lectures or Tirgul found."
+        message:
+          "Demo: no sessions in the frozen QA week. Edit `getDemoWeeklyCatchupVirtualNow` in `src/lib/demo-weekly-catchup.ts` to a Sun–Thu block that matches your calendar data."
       });
       return;
     }
-    const anchor = candidates[Math.floor(Math.random() * candidates.length)]!;
     setWeeklyCatchUpDemo(true);
-    openWeeklyCatchUpForAnchor(anchor);
-  }, [activeCourses, selectedCalendarDate, openWeeklyCatchUpForAnchor]);
+    openWeeklyCatchUpForAnchor(demoAnchor);
+  }, [activeCourses, openWeeklyCatchUpForAnchor, purgeWeeklyCatchUpDemoTasks]);
 
   const handleWeeklyCatchUpGenerate = useCallback(
     (attendedInstanceKeys: Set<string>, mode: "initial" | "edit") => {
@@ -1887,7 +1964,12 @@ export function SchoolOS() {
       for (const occ of weeklyCatchUpOccurrences) {
         if (attendedInstanceKeys.has(occ.instanceKey)) continue;
         const dedupeTag = `catchup:${occ.instanceKey}`;
-        if (state.tasks.some((t) => (t.tags ?? []).includes(dedupeTag))) continue;
+        const dedupeBlocked = state.tasks.some((t) => {
+          if (!(t.tags ?? []).includes(dedupeTag)) return false;
+          if (isDemo && (t.tags ?? []).includes(DEMO_WEEKLY_CATCHUP_TASK_TAG)) return false;
+          return true;
+        });
+        if (dedupeBlocked) continue;
         const sessionLabel = occ.meeting.title?.trim() || formatSessionType(occ.meeting.type);
         const dateStr = formatDateKey(occ.date);
         const courseName = occ.course.name?.trim();
@@ -1898,6 +1980,8 @@ export function SchoolOS() {
         const deadlineNote = dueAt
           ? ` Due before your next lecture/tutorial in this course (${new Date(dueAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}).`
           : " No later lecture/tutorial found on your calendar in the next year — add a due date manually if you want one.";
+        const panoptoFolder = resolvePanoptoFolderUrl(occ.course);
+        const panoptoNote = panoptoFolder ? `\n\nPanopto (course folder): ${panoptoFolder}` : "";
         const taskId = createId("task");
         const tags = isDemo
           ? (["recording-catchup", weekTag, dedupeTag, DEMO_WEEKLY_CATCHUP_TASK_TAG] as string[])
@@ -1905,7 +1989,7 @@ export function SchoolOS() {
         addTask({
           id: taskId,
           title: `Watch recording: ${coursePart} — ${sessionLabel}`,
-          description: `${baseDescription}.${deadlineNote}`,
+          description: `${baseDescription}.${deadlineNote}${panoptoNote}`,
           courseId: occ.course.id,
           status: "backlog",
           dueAt,
@@ -1942,7 +2026,12 @@ export function SchoolOS() {
     [dispatch]
   );
 
-  /** Glow clears when leaving Kanban; demo catch-up tasks are removed then too (or when the modal closes). */
+  /**
+   * Glow clears when leaving Kanban; demo catch-up tasks are removed then too.
+   * Intentionally omit `catchUpGlowTaskIds` from deps: when “Go to tasks” sets glow then switches to Kanban,
+   * a commit can still have activeView !== "kanban" while glow ids are already set — this would clear glow
+   * and purge demo tasks before you see them.
+   */
   useEffect(() => {
     if (state.ui.activeView !== "kanban") {
       if (catchUpGlowTaskIds.length > 0) {
@@ -1950,7 +2039,7 @@ export function SchoolOS() {
       }
       purgeWeeklyCatchUpDemoTasks();
     }
-  }, [state.ui.activeView, catchUpGlowTaskIds.length, purgeWeeklyCatchUpDemoTasks]);
+  }, [state.ui.activeView, purgeWeeklyCatchUpDemoTasks]);
 
   const openClassNoteDraftForSession = useCallback(
     (courseId: string, meetingId: string, anchorDate: Date) => {
@@ -2765,12 +2854,12 @@ export function SchoolOS() {
               newlyAddedCourseId={onboardingCourseGlowId}
               onOpenWeeklyCatchUp={handleWeeklyCatchUpRequestFromCalendar}
               catchUpOwnerToolbar={
-                isCatchUpDemoUser(user?.email) ? (
+                isAdmin ? (
                   <Button
                     variant="outline"
                     className="h-8 shrink-0 text-xs"
                     type="button"
-                    title="Random Sun–Thu week with sessions; tasks vanish when you leave Kanban or close after generating."
+                    title="QA: clears prior demo catch-up tasks, then opens a fixed Sun–Thu week (virtual date in src/lib/demo-weekly-catchup.ts). Real Weekly catch-up still uses actual time. Demo tasks are removed when you leave Kanban or close this modal."
                     onClick={handleDemoWeeklyCatchUp}
                   >
                     Demo catch-up
@@ -3106,7 +3195,7 @@ export function SchoolOS() {
             className="absolute inset-0 bg-slate-950/18 backdrop-blur-[1px] dark:bg-black/35"
             onClick={() => setIsSettingsOpen(false)}
           />
-          <aside className="absolute inset-y-4 right-4 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-4 overflow-y-auto rounded-[32px] border border-slate-200/80 bg-[#f7f8fa]/96 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#0f1115]/96 dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]">
+          <aside className="absolute inset-y-4 right-4 flex w-[min(420px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-4 overflow-y-auto rounded-[32px] border border-slate-200/80 bg-[#f7f8fa]/96 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#0f1115]/96 dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]">
             <div className="flex items-center justify-between px-1">
               <div>
                 <h3 className="text-lg font-semibold tracking-tight">Settings</h3>
@@ -3124,6 +3213,123 @@ export function SchoolOS() {
                 {isSigningOut ? "Signing out..." : "Sign out"}
               </Button>
             </Panel>
+
+            {isAdmin && (
+              <Panel className="bg-white/92 dark:bg-[#101317]/92" data-onboarding="admin-workspace-users">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 className="font-semibold">Live accounts</h3>
+                  <Button variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={() => void loadWorkspaceUsers()} disabled={workspaceUsersLoading}>
+                    Refresh
+                  </Button>
+                </div>
+                <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                  Supabase users who can sign in to this deployment. <span className="font-medium">Last activity</span> is the later of last sign-in or last cloud workspace save.
+                </p>
+                {workspaceUsersError ? <p className="text-xs text-rose-500">{workspaceUsersError}</p> : null}
+                {workspaceUsersLoading && workspaceUsers.length === 0 ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Loading…</p>
+                ) : workspaceUsers.length === 0 ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">No users returned.</p>
+                ) : (
+                  <div className="max-h-56 overflow-x-auto overflow-y-auto rounded-xl border border-slate-200/80 dark:border-white/10">
+                    <table className="w-full min-w-[280px] border-collapse text-left text-[11px]">
+                      <thead>
+                        <tr className="border-b border-slate-200/80 text-slate-500 dark:border-white/10 dark:text-slate-400">
+                          <th className="sticky top-0 bg-white/95 py-1.5 pe-2 ps-2 font-medium dark:bg-[#101317]/95">Email</th>
+                          <th className="sticky top-0 bg-white/95 py-1.5 pe-2 ps-0 font-medium dark:bg-[#101317]/95">Last activity</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {workspaceUsers.map((row) => (
+                          <tr key={row.id} className="border-b border-slate-100/90 last:border-0 dark:border-white/[0.06]">
+                            <td className="max-w-[140px] truncate py-1.5 pe-2 ps-2 align-top text-slate-800 dark:text-slate-100" title={row.email}>
+                              {row.email || "—"}
+                            </td>
+                            <td className="whitespace-nowrap py-1.5 pe-2 align-top text-slate-600 dark:text-slate-300">
+                              {row.last_activity_at
+                                ? new Date(row.last_activity_at).toLocaleString(undefined, {
+                                    dateStyle: "medium",
+                                    timeStyle: "short"
+                                  })
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Panel>
+            )}
+
+            {isAdmin && (
+              <Panel className="bg-white/92 dark:bg-[#101317]/92" data-onboarding="admin-early-access-requests">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 className="font-semibold">Early access requests</h3>
+                  <Button variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={() => void loadEarlyAccessRequests()} disabled={earlyAccessLoading}>
+                    Refresh
+                  </Button>
+                </div>
+                <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                  Stealth beta: pending requests from &quot;Request early access&quot;, then recent granted rows. Grant adds the email to the allowlist so they can sign up or use Google.
+                </p>
+                {earlyAccessError ? <p className="text-xs text-rose-500">{earlyAccessError}</p> : null}
+                {earlyAccessLoading && earlyAccessRequests.length === 0 ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Loading…</p>
+                ) : earlyAccessRequests.length === 0 ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">No requests yet.</p>
+                ) : (
+                  <div className="max-h-64 overflow-x-auto overflow-y-auto rounded-xl border border-slate-200/80 dark:border-white/10">
+                    <table className="w-full min-w-[320px] border-collapse text-left text-[11px]">
+                      <thead>
+                        <tr className="border-b border-slate-200/80 text-slate-500 dark:border-white/10 dark:text-slate-400">
+                          <th className="sticky top-0 bg-white/95 py-1.5 pe-2 ps-2 font-medium dark:bg-[#101317]/95">Email</th>
+                          <th className="sticky top-0 bg-white/95 py-1.5 pe-2 ps-0 font-medium dark:bg-[#101317]/95">Status</th>
+                          <th className="sticky top-0 bg-white/95 py-1.5 pe-2 ps-0 font-medium dark:bg-[#101317]/95">Requested</th>
+                          <th className="sticky top-0 bg-white/95 py-1.5 pe-2 ps-0 font-medium dark:bg-[#101317]/95" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {earlyAccessRequests.map((row) => (
+                          <tr key={row.id} className="border-b border-slate-100/90 align-top last:border-0 dark:border-white/[0.06]">
+                            <td className="max-w-[120px] truncate py-1.5 pe-2 ps-2 text-slate-800 dark:text-slate-100" title={row.email}>
+                              {row.email}
+                            </td>
+                            <td className="whitespace-nowrap py-1.5 pe-2 text-slate-600 dark:text-slate-300">{row.status}</td>
+                            <td className="whitespace-nowrap py-1.5 pe-2 text-slate-600 dark:text-slate-300">
+                              {new Date(row.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+                            </td>
+                            <td className="py-1.5 pe-2 ps-0">
+                              {row.status === "pending" ? (
+                                <Button
+                                  variant="outline"
+                                  className="h-7 px-2 text-[10px]"
+                                  disabled={grantingEarlyAccessEmail === row.email}
+                                  onClick={() => void grantEarlyAccess(row.email)}
+                                >
+                                  {grantingEarlyAccessEmail === row.email ? "…" : "Grant access"}
+                                </Button>
+                              ) : (
+                                <span className="text-slate-400">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {earlyAccessRequests.some((r) => r.message) ? (
+                      <div className="mt-2 space-y-1 border-t border-slate-200/80 pt-2 text-[10px] text-slate-500 dark:border-white/10 dark:text-slate-400">
+                        {earlyAccessRequests.filter((r) => r.message).map((row) => (
+                          <p key={`msg-${row.id}`}>
+                            <span className="font-medium text-slate-600 dark:text-slate-300">{row.email}:</span> {row.message}
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </Panel>
+            )}
 
             <Panel className="bg-white/92 dark:bg-[#101317]/92" data-onboarding="settings-degree-panel">
               <h3 className="mb-2 font-semibold">Degree</h3>
@@ -3769,6 +3975,7 @@ export function SchoolOS() {
         open={weeklyCatchUpOpen}
         weekLabel={weeklyCatchUpWeekLabel}
         occurrences={weeklyCatchUpOccurrences}
+        demoMode={weeklyCatchUpDemo}
         alreadySubmitted={weeklyCatchUpDemo ? false : isWeekKeySubmitted(weeklyCatchUpWeekKey)}
         onClose={() => {
           purgeWeeklyCatchUpDemoTasks();
@@ -7286,6 +7493,15 @@ function TaskDetailModal({
     return Array.from(new Set(matches));
   }, [description]);
 
+  const courseForTask = useMemo(
+    () => (courseId === "general" ? undefined : courses.find((c) => c.id === courseId)),
+    [courseId, courses]
+  );
+  const panoptoFolderForTask = useMemo(
+    () => (courseForTask ? resolvePanoptoFolderUrl(courseForTask) : undefined),
+    [courseForTask]
+  );
+
   const nextBookedBlock = useMemo(() => getNextScheduledBlock(task.id, workBlocks), [task.id, workBlocks]);
   const bookingStatusLabel = nextBookedBlock
     ? `Booked ${new Date(nextBookedBlock.startAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} · ${new Date(nextBookedBlock.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
@@ -7479,7 +7695,54 @@ function TaskDetailModal({
               <option value="high">High</option>
               <option value="urgent">Urgent</option>
             </select>
-            <textarea value={description} onChange={(event) => setDescription(event.target.value)} className="min-h-[120px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none md:col-span-2 dark:border-white/10 dark:bg-white/[0.04]" />
+            <div className="md:col-span-2 space-y-1.5">
+              <label className="block px-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Description
+              </label>
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                className="min-h-[120px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]"
+              />
+            </div>
+            {panoptoFolderForTask ? (
+              <div className="md:col-span-2 rounded-2xl border border-slate-200/80 bg-slate-50/60 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                  Panopto — course folder
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <a
+                    href={panoptoFolderForTask}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="inline-flex max-w-full items-center gap-1.5 break-all text-sm text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-300 dark:hover:text-sky-200"
+                  >
+                    Open recordings folder
+                  </a>
+                  {!description.includes(panoptoFolderForTask) ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 px-3 text-xs"
+                      onClick={() => {
+                        const url = panoptoFolderForTask;
+                        setDescription((d) => {
+                          if (d.includes(url)) return d;
+                          const base = d.trim();
+                          const line = `Panopto (course folder): ${url}`;
+                          return base ? `${base}\n\n${line}` : line;
+                        });
+                      }}
+                    >
+                      Add link to description
+                    </Button>
+                  ) : null}
+                </div>
+                <p className="mt-2 text-[10px] leading-snug text-slate-400 dark:text-slate-500">
+                  Links inside the description box are plain text; use Open recordings folder or Detected links below to open in a new tab.
+                </p>
+              </div>
+            ) : null}
             {detectedLinks.length > 0 && (
               <div className="md:col-span-2 rounded-2xl border border-slate-200/80 bg-slate-50/60 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
                 <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Detected links</p>

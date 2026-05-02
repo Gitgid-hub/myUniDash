@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabase";
+import { isStealthEarlyAccessEnabled } from "@/lib/early-access";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -28,6 +29,27 @@ export default function AuthCallbackPage() {
             throw exchangeError;
           }
         }
+
+        if (isStealthEarlyAccessEnabled()) {
+          const { data: sessionData } = await supabase.auth.getSession();
+          const token = sessionData.session?.access_token;
+          if (token) {
+            const res = await fetch("/api/early-access/session", {
+              headers: { Authorization: `Bearer ${token}` },
+              cache: "no-store"
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (res.ok && payload && payload.granted === false) {
+              await supabase.auth.signOut();
+              if (!mounted) return;
+              setError(
+                "This Google account is not approved for beta access yet. Go back to the app, use Request early access, then try Google sign-in again after you are approved."
+              );
+              return;
+            }
+          }
+        }
+
         router.replace("/dashboard");
       } catch (err) {
         if (!mounted) return;
@@ -47,9 +69,16 @@ export default function AuthCallbackPage() {
         <h1 className="text-lg font-semibold">Signing you in...</h1>
         <p className="mt-2 text-sm text-slate-400">Finalizing Google authentication and redirecting to your dashboard.</p>
         {error ? (
-          <p className="mt-4 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
-            {error}
-          </p>
+          <div className="mt-4 space-y-3">
+            <p className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p>
+            <button
+              type="button"
+              onClick={() => router.replace("/dashboard")}
+              className="w-full rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-slate-100 hover:bg-white/15"
+            >
+              Back to sign in
+            </button>
+          </div>
         ) : null}
       </div>
     </div>

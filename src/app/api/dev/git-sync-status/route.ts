@@ -1,10 +1,10 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
+import { isAdminEmail } from "@/lib/admin-emails";
 import { getServiceSupabaseClient } from "@/lib/supabase-server";
 
 const execAsync = promisify(exec);
-const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gmail.com"]);
 
 async function getAuthUserFromRequest(request: NextRequest): Promise<{ id: string; email: string } | null> {
   const authHeader = request.headers.get("authorization");
@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!ADMIN_EMAILS.has(authUser.email.toLowerCase())) {
+    if (!isAdminEmail(authUser.email)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

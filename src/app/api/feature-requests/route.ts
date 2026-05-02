@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isAdminEmail } from "@/lib/admin-emails";
 import { getServiceSupabaseClient } from "@/lib/supabase-server";
-
-const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gmail.com"]);
 const MAX_SCREENSHOTS = 3;
 const MAX_SCREENSHOT_DATA_URL_LENGTH = 1_500_000;
 
@@ -46,7 +45,7 @@ export async function GET(request: NextRequest) {
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!ADMIN_EMAILS.has(authUser.email.toLowerCase())) {
+    if (!isAdminEmail(authUser.email)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -110,7 +109,7 @@ export async function DELETE(request: NextRequest) {
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!ADMIN_EMAILS.has(authUser.email.toLowerCase())) {
+    if (!isAdminEmail(authUser.email)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

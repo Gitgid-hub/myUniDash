@@ -47,6 +47,8 @@ export interface Course {
   id: ID;
   name: string;
   code: string;
+  /** Optional Panopto “course folder” list URL; overrides built-in lookup by `code` when set. */
+  panoptoFolderUrl?: string;
   source?: string;
   externalCourseId?: string;
   catalogLastSyncedAt?: string;

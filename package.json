@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "WATCHPACK_POLLING=true next dev --hostname localhost --port 3000",
+    "dev:clean": "rm -rf .next && WATCHPACK_POLLING=true next dev --hostname localhost --port 3000",
+    "dev:turbo": "rm -rf .next && next dev --turbo --hostname localhost --port 3000",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

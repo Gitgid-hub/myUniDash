@@ -209,3 +209,36 @@ create policy "Users can delete own attachments"
     bucket_id = 'user-attachments' and
     (storage.foldername(name))[1] = auth.uid()::text
   );
+
+-- ---------------------------------------------------------------------------
+-- Stealth early access (grants + requests). RLS on with no policies: only
+-- service role (Next.js API routes) can read/write. Anon uses /api/early-access/*.
+--
+-- One-time after creating tables (grandfather existing auth users):
+--   insert into public.early_access_grants (email)
+--   select lower(trim(email)) from auth.users where email is not null
+--   on conflict (email) do nothing;
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.early_access_grants (
+  email text primary key,
+  granted_at timestamptz not null default now(),
+  granted_by text
+);
+
+create table if not exists public.early_access_requests (
+  id bigint generated always as identity primary key,
+  email text not null,
+  message text,
+  status text not null default 'pending',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists early_access_requests_status_created_idx
+  on public.early_access_requests (status, created_at desc);
+
+create index if not exists early_access_requests_email_idx
+  on public.early_access_requests (email);
+
+alter table public.early_access_grants enable row level security;
+alter table public.early_access_requests enable row level security;

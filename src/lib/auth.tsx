@@ -73,16 +73,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.error("Supabase getSession error:", err);
         if (!mounted) return;
         setSession(null);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setLoading(false);
       });
 
     void (async () => {
       try {
         await Promise.race([sessionPromise, delay(3_500)]);
-        if (cancelled) return;
-        setLoading(false);
       } catch {
-        if (!cancelled) setLoading(false);
+        // sessionPromise rejected — loading still cleared in .finally above
       }
+      if (!cancelled) setLoading(false);
     })();
 
     return () => {

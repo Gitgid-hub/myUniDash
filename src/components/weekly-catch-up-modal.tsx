@@ -35,18 +35,12 @@ export type WeeklyCatchUpGenerateResult = {
   newTaskIds: string[];
 };
 
-export function WeeklyCatchUpModal({
-  open,
-  weekLabel,
-  occurrences,
-  alreadySubmitted,
-  onClose,
-  onGenerate,
-  onGoToTasks
-}: {
+export type WeeklyCatchUpModalProps = {
   open: boolean;
   weekLabel: string;
   occurrences: SessionOccurrence[];
+  /** Owner “Demo catch-up”: prior demo tasks were cleared when opening; safe to regenerate for QA. */
+  demoMode?: boolean;
   /** True when the user already pressed Generate for this week (modal opens read-only with an Edit option). */
   alreadySubmitted: boolean;
   onClose: () => void;
@@ -57,7 +51,18 @@ export function WeeklyCatchUpModal({
   ) => WeeklyCatchUpGenerateResult;
   /** Switch to the Kanban view and trigger the soft glow on `newTaskIds`. */
   onGoToTasks: (newTaskIds: string[]) => void;
-}) {
+};
+
+export function WeeklyCatchUpModal({
+  open,
+  weekLabel,
+  occurrences,
+  demoMode = false,
+  alreadySubmitted,
+  onClose,
+  onGenerate,
+  onGoToTasks
+}: WeeklyCatchUpModalProps) {
   const [attended, setAttended] = useState<Set<string>>(() => new Set());
   const [editMode, setEditMode] = useState(false);
   const [resultStep, setResultStep] = useState<WeeklyCatchUpGenerateResult | null>(null);
@@ -128,6 +133,12 @@ export function WeeklyCatchUpModal({
                 ? `You already generated catch-up tasks for ${weekLabel}. The list below is read-only — use Edit if you need to add more recording tasks.`
                 : `Lectures & Tirgul (Sun–Thu) — ${weekLabel}. Check sessions you attended; Generate adds backlog tasks to watch recordings for the rest. Each task's due date is set to the start of your next lecture or Tirgul in that course (from your calendar).`}
           </p>
+          {demoMode && !showResult ? (
+            <p className="mt-3 rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs leading-snug text-sky-900 dark:text-sky-100/95">
+              <span className="font-semibold">QA demo.</span> Any previous demo catch-up tasks were cleared when you opened this. Sessions are for a{" "}
+              <span className="font-medium">fixed Sun–Thu week</span> (virtual “now” in <code className="rounded bg-black/10 px-1 py-0.5 font-mono text-[10px] dark:bg-white/10">src/lib/demo-weekly-catchup.ts</code>), not the live calendar week. Use Demo catch-up again after each change; closing this modal or leaving Kanban also clears demo tasks.
+            </p>
+          ) : null}
         </div>
 
         {showResult ? (

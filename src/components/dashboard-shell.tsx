@@ -1,16 +1,59 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { SchoolOS } from "@/components/school-os";
 import { AuthScreen } from "@/components/auth-screen";
 import { useAuth } from "@/lib/auth";
+import { isStealthEarlyAccessEnabled } from "@/lib/early-access";
 import { SupabaseStateStore } from "@/lib/cloud-store";
 import { LocalStorageStore } from "@/lib/storage";
 import { SchoolStoreProvider } from "@/lib/store";
 import type { Store } from "@/lib/types";
+import { getSupabaseClient } from "@/lib/supabase";
 
 export function DashboardShell() {
   const { enabled, loading, user } = useAuth();
+
+  useEffect(() => {
+    if (!enabled || !user?.email || !isStealthEarlyAccessEnabled()) return;
+
+    let cancelled = false;
+
+    async function verifyGrant() {
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token || cancelled) return;
+
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 12_000);
+        let res: Response;
+        try {
+          res = await fetch("/api/early-access/session", {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+            signal: controller.signal
+          });
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+        const payload = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (res.ok && payload && payload.granted === false) {
+          await supabase.auth.signOut();
+        }
+      } catch {
+        // Missing tables, network, or abort — do not sign the user out
+      }
+    }
+
+    void verifyGrant();
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, user?.email, user?.id]);
 
   /** Stable per account — avoid new `SupabaseStateStore` on every `user` object reference churn from `onAuthStateChange`. */
   const cloudUserId = enabled ? user?.id : undefined;
