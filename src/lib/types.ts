@@ -162,6 +162,8 @@ export interface UIState {
   focusedTaskId?: ID;
   /** Timestamp when first-run onboarding was dismissed/completed. */
   onboardingCompletedAt?: string;
+  /** YYYY-MM-DD of week Sunday when the weekly catch-up modal was last auto-opened or completed (Sun–Thu academic week). */
+  catchUpPromptedWeekKey?: string;
 }
 
 export interface SchoolState {

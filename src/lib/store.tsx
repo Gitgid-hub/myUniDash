@@ -63,6 +63,7 @@ type Action =
   | { type: "set-focus"; payload?: ID }
   | { type: "set-course-filter"; payload: ID | "all" }
   | { type: "set-onboarding-complete"; payload?: string }
+  | { type: "set-catch-up-prompt-week"; payload?: string }
   | { type: "add-task"; payload: TaskInput }
   | { type: "update-task"; payload: Partial<Task> & { id: ID } }
   | { type: "toggle-task-done"; payload: ID }
@@ -154,7 +155,8 @@ function normalizeState(state: SchoolState): SchoolState {
       showTaskComposer: state.ui?.showTaskComposer ?? false,
       showSearch: state.ui?.showSearch ?? false,
       focusedTaskId: state.ui?.focusedTaskId,
-      onboardingCompletedAt: state.ui?.onboardingCompletedAt
+      onboardingCompletedAt: state.ui?.onboardingCompletedAt,
+      catchUpPromptedWeekKey: state.ui?.catchUpPromptedWeekKey
     }
   };
 }
@@ -220,6 +222,8 @@ function reducer(state: SchoolState, action: Action): SchoolState {
       return { ...state, ui: { ...state.ui, selectedCourseId: action.payload } };
     case "set-onboarding-complete":
       return { ...state, ui: { ...state.ui, onboardingCompletedAt: action.payload ?? nowIso() } };
+    case "set-catch-up-prompt-week":
+      return { ...state, ui: { ...state.ui, catchUpPromptedWeekKey: action.payload } };
     case "add-task": {
       const now = nowIso();
       const newTask: Task = {

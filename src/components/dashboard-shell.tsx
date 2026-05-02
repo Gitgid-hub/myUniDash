@@ -25,14 +25,19 @@ export function DashboardShell() {
     return () => window.clearTimeout(id);
   }, [enabled]);
 
+  /** Stable per account — avoid new `SupabaseStateStore` on every `user` object reference churn from `onAuthStateChange`. */
+  const cloudUserId = enabled ? user?.id : undefined;
   const store = useMemo<Store>(() => {
-    if (enabled && user) {
-      return new SupabaseStateStore(user.id);
+    if (cloudUserId) {
+      return new SupabaseStateStore(cloudUserId);
     }
     return new LocalStorageStore();
-  }, [enabled, user]);
+  }, [cloudUserId]);
 
-  if (enabled && (loading || !authSplashMinElapsed)) {
+  /** Logged-in users should not depend on the 3s timer (it can fail to fire if the effect is churned); keep min splash only while auth is resolving or signed-out. */
+  const showAuthSplash = Boolean(enabled && (loading || (!user && !authSplashMinElapsed)));
+
+  if (showAuthSplash) {
     return (
       <div className="flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 px-4 text-center text-slate-100">
         <div className="relative">
@@ -73,7 +78,7 @@ export function DashboardShell() {
   }
 
   return (
-    <SchoolStoreProvider store={store} key={enabled && user ? user.id : "local"}>
+    <SchoolStoreProvider store={store} key={cloudUserId ?? "local"}>
       <SchoolOS />
     </SchoolStoreProvider>
   );

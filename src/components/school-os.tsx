@@ -75,6 +75,28 @@ import { getSupabaseClient } from "@/lib/supabase";
 import type { CalendarHolidayChip } from "@/lib/calendar-holidays";
 import { indexHolidayChipsByDate, readCachedHolidayYear, writeCachedHolidayYear } from "@/lib/calendar-holidays";
 import { pushSchoolOsToast } from "@/lib/global-app-toasts";
+import {
+  academicWeekKeyFromAnchor,
+  getAcademicWeekSunThu,
+  getLastThursdaySessionEndInWeek,
+  listCatchUpOccurrences,
+  sortCatchUpOccurrencesBySchedule
+} from "@/lib/academic-week-catchup";
+import {
+  addDays,
+  CALENDAR_WEEK_DAYS as weekDays,
+  detectMeetingConflicts,
+  expandMeetingOccurrences,
+  formatDateKey,
+  formatSessionType,
+  getWeekDayFromDate,
+  groupOccurrencesByDate,
+  layoutOverlappingEvents,
+  parseTimeValue,
+  startOfWeekGrid,
+  type SessionOccurrence
+} from "@/lib/calendar-occurrences";
+import { WeeklyCatchUpModal } from "@/components/weekly-catch-up-modal";
 
 const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ className?: string }> }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -237,7 +259,6 @@ function pickDistinctCourseColor(existingColors: string[]): string {
   return bestColor;
 }
 
-const weekDays: WeekDay[] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 type SessionCadence = "none" | "daily" | "weekly" | "monthly";
 type QuickSessionType = "lecture" | "tutorial";
 
@@ -536,12 +557,15 @@ export function SchoolOS() {
   const { state, ready, dispatch, addTask, updateTask, toggleTaskDone, addCourse } = useSchoolStore();
   const { user } = useAuth();
   usePruneClassNoteAttachmentBlobs(state.classNotes);
-  const [quickTaskSearch, setQuickTaskSearch] = useState("");
   const [kanbanTab, setKanbanTab] = useState<"board" | "completed">("board");
   const [composerInitialCourseId, setComposerInitialCourseId] = useState<string | "general" | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState("");
   const [calendarMode, setCalendarMode] = useState<"month" | "week" | "day">("week");
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date());
+  const [weeklyCatchUpOpen, setWeeklyCatchUpOpen] = useState(false);
+  const [weeklyCatchUpOccurrences, setWeeklyCatchUpOccurrences] = useState<SessionOccurrence[]>([]);
+  const [weeklyCatchUpWeekKey, setWeeklyCatchUpWeekKey] = useState("");
+  const [weeklyCatchUpWeekLabel, setWeeklyCatchUpWeekLabel] = useState("");
   const [newCourseName, setNewCourseName] = useState("");
   const [newCourseCode, setNewCourseCode] = useState("");
   const [newCourseColor, setNewCourseColor] = useState(coursePalette[0]);
@@ -1595,18 +1619,7 @@ export function SchoolOS() {
     [addTask, dispatch]
   );
 
-  const kanbanTasks = useMemo(() => {
-    const query = quickTaskSearch.trim().toLowerCase();
-    const baseTasks = [...state.tasks].sort(taskComparator);
-    if (!query) return baseTasks;
-    return baseTasks.filter((task) => {
-      const course = state.courses.find((item) => item.id === task.courseId);
-      const haystack = [task.title, task.description, task.status, task.priority, course?.name ?? "", course?.code ?? "", ...(task.tags ?? [])]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(query);
-    });
-  }, [quickTaskSearch, state.courses, state.tasks]);
+  const kanbanTasks = useMemo(() => [...state.tasks].sort(taskComparator), [state.tasks]);
 
   const kanbanBoardTasks = useMemo(() => kanbanTasks.filter((task) => task.status !== "done"), [kanbanTasks]);
   const kanbanCompletedTasks = useMemo(() => kanbanTasks.filter((task) => task.status === "done"), [kanbanTasks]);
@@ -1655,6 +1668,91 @@ export function SchoolOS() {
     };
     setSelectedCalendarSession(target);
   }, [selectedCalendarDate]);
+
+  const openWeeklyCatchUpForAnchor = useCallback(
+    (anchorDate: Date) => {
+      const { start, end } = getAcademicWeekSunThu(anchorDate);
+      const occ = sortCatchUpOccurrencesBySchedule(listCatchUpOccurrences(activeCourses, start, end));
+      setWeeklyCatchUpOccurrences(occ);
+      setWeeklyCatchUpWeekKey(academicWeekKeyFromAnchor(anchorDate));
+      setWeeklyCatchUpWeekLabel(
+        `${start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`
+      );
+      setWeeklyCatchUpOpen(true);
+    },
+    [activeCourses]
+  );
+
+  const openWeeklyCatchUpRef = useRef(openWeeklyCatchUpForAnchor);
+  openWeeklyCatchUpRef.current = openWeeklyCatchUpForAnchor;
+
+  useEffect(() => {
+    if (!ready) return;
+    const tick = () => {
+      const now = new Date();
+      const weekKey = academicWeekKeyFromAnchor(now);
+      if (state.ui?.catchUpPromptedWeekKey === weekKey) return;
+      const { start, end } = getAcademicWeekSunThu(now);
+      const occ = listCatchUpOccurrences(activeCourses, start, end);
+      const weekSunday = startOfWeekGrid(now, "sunday");
+      const triggerAt = getLastThursdaySessionEndInWeek(occ, weekSunday);
+      if (now.getTime() < triggerAt.getTime()) return;
+      dispatch({ type: "set-catch-up-prompt-week", payload: weekKey });
+      openWeeklyCatchUpRef.current(now);
+    };
+    tick();
+    const id = window.setInterval(tick, 60_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [ready, activeCourses, state.ui?.catchUpPromptedWeekKey, dispatch]);
+
+  const handleOpenWeeklyCatchUpFromCalendar = useCallback(
+    (weekAnchorDate: Date) => {
+      openWeeklyCatchUpForAnchor(weekAnchorDate);
+    },
+    [openWeeklyCatchUpForAnchor]
+  );
+
+  const handleWeeklyCatchUpGenerate = useCallback(
+    (attendedInstanceKeys: Set<string>) => {
+      const weekTag = `catchup-week-${weeklyCatchUpWeekKey}`;
+      let created = 0;
+      for (const occ of weeklyCatchUpOccurrences) {
+        if (attendedInstanceKeys.has(occ.instanceKey)) continue;
+        const dedupeTag = `catchup:${occ.instanceKey}`;
+        if (state.tasks.some((t) => (t.tags ?? []).includes(dedupeTag))) continue;
+        const sessionLabel = occ.meeting.title?.trim() || formatSessionType(occ.meeting.type);
+        const dateStr = formatDateKey(occ.date);
+        const courseName = occ.course.name?.trim();
+        const coursePart =
+          courseName && courseName !== occ.course.code.trim() ? `${courseName} (${occ.course.code})` : occ.course.code;
+        addTask({
+          title: `Watch recording: ${coursePart} — ${sessionLabel}`,
+          description: `Catch up for ${coursePart} on ${dateStr} ${occ.meeting.start}–${occ.meeting.end}`,
+          courseId: occ.course.id,
+          status: "backlog",
+          tags: ["recording-catchup", weekTag, dedupeTag]
+        });
+        created += 1;
+      }
+      dispatch({ type: "set-catch-up-prompt-week", payload: weeklyCatchUpWeekKey });
+      if (created > 0) {
+        dispatch({ type: "set-course-filter", payload: "all" });
+      }
+      pushSchoolOsToast({
+        kind: "success",
+        message: created > 0 ? `Added ${created} catch-up task(s).` : "No new tasks (all attended or already added)."
+      });
+      setWeeklyCatchUpOpen(false);
+    },
+    [weeklyCatchUpOccurrences, weeklyCatchUpWeekKey, state.tasks, addTask, dispatch]
+  );
 
   const openClassNoteDraftForSession = useCallback(
     (courseId: string, meetingId: string, anchorDate: Date) => {
@@ -2339,21 +2437,14 @@ export function SchoolOS() {
                   <p className="mt-1 text-[15px] text-slate-500 dark:text-slate-400">One month to launch. Everything in one place.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {state.ui.activeView === "kanban" && (
-                    <div className="relative min-w-[260px]">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                      <input
-                        value={quickTaskSearch}
-                        onChange={(event) => setQuickTaskSearch(event.target.value)}
-                        placeholder="Quick search tasks..."
-                        className="w-full rounded-full border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-4 text-sm outline-none placeholder:text-slate-400 focus:border-slate-400 dark:border-white/10 dark:bg-white/[0.04]"
-                      />
-                    </div>
-                  )}
                   <button
                     type="button"
                     onClick={() => dispatch({ type: "set-search", payload: true })}
-                    className="inline-flex h-10 min-w-[260px] items-center justify-between rounded-full border border-slate-200 bg-slate-50 px-4 text-sm text-slate-600 transition hover:bg-slate-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08]"
+                    className={`inline-flex h-10 items-center justify-between rounded-full border border-slate-200 bg-slate-50 px-4 text-sm text-slate-600 transition hover:bg-slate-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08] ${
+                      state.ui.activeView === "kanban"
+                        ? "w-full min-w-0 max-w-[520px] sm:w-[520px]"
+                        : "min-w-[260px]"
+                    }`}
                   >
                     <span className="inline-flex items-center gap-2">
                       <Search className="h-4 w-4 text-slate-400" />
@@ -2431,7 +2522,6 @@ export function SchoolOS() {
                 weeklyCompletedBuckets={kanbanWeeklyBuckets}
                 courses={state.courses}
                 workBlocks={state.workBlocks}
-                quickSearchQuery={quickTaskSearch}
                 onUpdate={updateTask}
                 onDelete={handleDeleteTask}
                 onFocus={handleFocusTask}
@@ -2472,6 +2562,7 @@ export function SchoolOS() {
               tentativeChoiceTitle={activeChoiceSet?.label}
               onPickTentativeOption={selectTentativeCalendarOption}
               newlyAddedCourseId={onboardingCourseGlowId}
+              onOpenWeeklyCatchUp={handleOpenWeeklyCatchUpFromCalendar}
             />
           )}
           {state.ui.activeView === "courses" && (
@@ -3449,6 +3540,14 @@ export function SchoolOS() {
           onSave={handleCreateTask}
         />
       )}
+      <WeeklyCatchUpModal
+        open={weeklyCatchUpOpen}
+        weekLabel={weeklyCatchUpWeekLabel}
+        occurrences={weeklyCatchUpOccurrences}
+        onClose={() => setWeeklyCatchUpOpen(false)}
+        onGenerate={handleWeeklyCatchUpGenerate}
+      />
+
       {state.ui.showSearch && (
         <SearchModal
           query={searchQuery}
@@ -3648,7 +3747,6 @@ function KanbanView({
   weeklyCompletedBuckets,
   courses,
   workBlocks,
-  quickSearchQuery,
   onUpdate,
   onDelete,
   onFocus,
@@ -3664,7 +3762,6 @@ function KanbanView({
   weeklyCompletedBuckets: Array<{ weekKey: string; count: number }>;
   courses: Course[];
   workBlocks: WorkBlock[];
-  quickSearchQuery: string;
   onUpdate: (task: Partial<Task> & { id: string }) => void;
   onDelete: (id: string) => void;
   onFocus: (id: string) => void;
@@ -3673,8 +3770,6 @@ function KanbanView({
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [sortModeByGroup, setSortModeByGroup] = useState<Record<string, "date" | "priority">>({});
-  const quickSearchToken = quickSearchQuery.trim().toLowerCase();
-  const searchActive = quickSearchToken.length > 0;
   const bookedBlockByTaskId = useMemo(() => buildBookedBlockByTaskId(workBlocks), [workBlocks]);
   const taskTypeLabel: Record<TaskStatus, string> = {
     backlog: "Backlog",
@@ -3711,19 +3806,6 @@ function KanbanView({
   function toggleGroup(groupId: string) {
     setCollapsedGroups((current) => ({ ...current, [groupId]: !current[groupId] }));
   }
-
-  useEffect(() => {
-    if (!searchActive) {
-      return;
-    }
-    setCollapsedGroups((current) => {
-      const next = { ...current };
-      for (const group of courseGroups) {
-        next[group.id] = group.tasks.length === 0;
-      }
-      return next;
-    });
-  }, [courseGroups, searchActive]);
 
   function sortTasksForGroup(groupId: string, sourceTasks: Task[]) {
     if (tab === "completed") {
@@ -3819,7 +3901,7 @@ function KanbanView({
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden pr-1 pb-2">
       {courseGroups.map((group) => {
-        const isCollapsed = searchActive ? group.tasks.length === 0 : (collapsedGroups[group.id] ?? false);
+        const isCollapsed = collapsedGroups[group.id] ?? false;
         const activeSortMode = sortModeByGroup[group.id] ?? "date";
         const sortedTasks = sortTasksForGroup(group.id, group.tasks);
         return (
@@ -3880,13 +3962,6 @@ function KanbanView({
                         const msUntilDeadline = dueTs - nowTs;
                         return msUntilDeadline > 0 && msUntilDeadline <= 2 * 24 * 60 * 60 * 1000;
                       })();
-                      const isQuickMatch = searchActive && [
-                        task.title,
-                        task.description,
-                        task.status,
-                        task.priority,
-                        ...(task.tags ?? [])
-                      ].join(" ").toLowerCase().includes(quickSearchToken);
                       return (
                     <div
                       key={task.id}
@@ -3899,11 +3974,7 @@ function KanbanView({
                           onFocus(task.id);
                         }
                       }}
-                      className={`group grid cursor-pointer grid-cols-[40px_1.35fr_1.6fr_1fr_0.9fr_0.85fr_0.8fr_52px] items-center px-4 py-3 text-sm transition ${
-                        isQuickMatch
-                          ? "mx-1.5 my-1 rounded-xl border border-amber-200/70 bg-amber-100/25 shadow-[0_0_0_1px_rgba(251,191,36,0.28),0_0_18px_rgba(251,191,36,0.26)] dark:border-amber-300/45 dark:bg-amber-300/10 dark:shadow-[0_0_0_1px_rgba(252,211,77,0.35),0_0_22px_rgba(252,211,77,0.28)]"
-                          : "border-b border-slate-200/70 hover:bg-slate-50/60 dark:border-white/10 dark:hover:bg-white/[0.04]"
-                      }`}
+                      className="group grid cursor-pointer grid-cols-[40px_1.35fr_1.6fr_1fr_0.9fr_0.85fr_0.8fr_52px] items-center border-b border-slate-200/70 px-4 py-3 text-sm transition hover:bg-slate-50/60 dark:border-white/10 dark:hover:bg-white/[0.04]"
                     >
                       <button
                         onClick={(event) => {
@@ -4035,7 +4106,8 @@ function CalendarView({
   tentativeOptions,
   tentativeChoiceTitle,
   onPickTentativeOption,
-  newlyAddedCourseId
+  newlyAddedCourseId,
+  onOpenWeeklyCatchUp
 }: {
   tasks: Task[];
   workBlocks: WorkBlock[];
@@ -4081,6 +4153,8 @@ function CalendarView({
   tentativeChoiceTitle?: string;
   onPickTentativeOption?: (optionId: string) => void;
   newlyAddedCourseId?: string | null;
+  /** Week view: Sun–Thu catch-up + progress; anchor = Sunday-based week to open (e.g. pane’s week during transition). */
+  onOpenWeeklyCatchUp?: (weekAnchorDate: Date) => void;
 }) {
   const visibleCourses = useMemo(() => courses.filter((course) => visibleCourseIds.includes(course.id)), [courses, visibleCourseIds]);
   const unrelatedSessionsCourse = useMemo(
@@ -4147,6 +4221,7 @@ function CalendarView({
       maxBlocks
     };
   }, [tentativeOptions]);
+
   const sessionByDate = groupOccurrencesByDate(sessionOccurrences);
   const taskByDay = useMemo(() => {
     return tasks.reduce<Record<string, Task[]>>((acc, task) => {
@@ -4914,7 +4989,8 @@ function CalendarView({
 
   function renderWeekGrid(
     weekData: Array<{ date: Date; key: string; sessions: SessionOccurrence[]; tasks: Task[] }>,
-    selectedDayForHeader: Date
+    selectedDayForHeader: Date,
+    catchUpAnchorDate: Date
   ) {
     return (
       <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-slate-200/80 dark:border-white/10">
@@ -4967,6 +5043,16 @@ function CalendarView({
                   Day
                 </Button>
               </div>
+              {onOpenWeeklyCatchUp ? (
+                <Button
+                  variant="outline"
+                  className="h-8 shrink-0 text-xs"
+                  type="button"
+                  onClick={() => onOpenWeeklyCatchUp(catchUpAnchorDate)}
+                >
+                  Weekly catch-up
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -5503,6 +5589,16 @@ function CalendarView({
               Day
             </Button>
           </div>
+          {onOpenWeeklyCatchUp ? (
+            <Button
+              variant="outline"
+              className="h-8 shrink-0 text-xs"
+              type="button"
+              onClick={() => onOpenWeeklyCatchUp(selectedDate)}
+            >
+              Weekly catch-up
+            </Button>
+          ) : null}
           </div>
         </div>
       )}
@@ -5584,19 +5680,43 @@ function CalendarView({
             >
               {weekTransition.direction === "next" ? (
                 <>
-                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate), weekTransition.fromDate)}</div>
-                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate), weekTransition.toDate)}</div>
+                  <div className="h-full w-full shrink-0 min-h-0">
+                    {renderWeekGrid(
+                      weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate),
+                      weekTransition.fromDate,
+                      weekTransition.fromDate
+                    )}
+                  </div>
+                  <div className="h-full w-full shrink-0 min-h-0">
+                    {renderWeekGrid(
+                      weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate),
+                      weekTransition.toDate,
+                      weekTransition.toDate
+                    )}
+                  </div>
                 </>
               ) : (
                 <>
-                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate), weekTransition.toDate)}</div>
-                  <div className="h-full w-full shrink-0 min-h-0">{renderWeekGrid(weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate), weekTransition.fromDate)}</div>
+                  <div className="h-full w-full shrink-0 min-h-0">
+                    {renderWeekGrid(
+                      weekTransitionData?.to ?? buildWeekOccurrencesByDay(weekTransition.toDate),
+                      weekTransition.toDate,
+                      weekTransition.toDate
+                    )}
+                  </div>
+                  <div className="h-full w-full shrink-0 min-h-0">
+                    {renderWeekGrid(
+                      weekTransitionData?.from ?? buildWeekOccurrencesByDay(weekTransition.fromDate),
+                      weekTransition.fromDate,
+                      weekTransition.fromDate
+                    )}
+                  </div>
                 </>
               )}
             </div>
           </div>
         ) : (
-          renderWeekGrid(weekOccurrencesByDay, selectedDate)
+          renderWeekGrid(weekOccurrencesByDay, selectedDate, selectedDate)
         )
       ) : (
         <div data-onboarding="calendar-day-planner" className="grid h-full min-h-0 gap-4 xl:grid-cols-[1.25fr_0.9fr]">
@@ -7589,11 +7709,6 @@ function SessionEditorModal({
   );
 }
 
-function parseTimeValue(value: string): number {
-  const [hours, minutes] = value.split(":").map(Number);
-  return hours + minutes / 60;
-}
-
 function formatHourMinutes(totalMinutes: number): string {
   const safeMinutes = Math.max(0, Math.round(totalMinutes));
   const hours = Math.floor(safeMinutes / 60);
@@ -7623,41 +7738,6 @@ function resolveWeekColumnKeyFromPoint(clientX: number, clientY: number): string
     }
   }
   return null;
-}
-
-type SessionOccurrence = {
-  course: Course;
-  meeting: CourseMeeting;
-  date: Date;
-  instanceKey: string;
-};
-
-type PositionedOccurrence = SessionOccurrence & {
-  column: number;
-  totalColumns: number;
-};
-
-function formatDateKey(date: Date): string {
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
-}
-
-function getWeekDayFromDate(date: Date): WeekDay {
-  return weekDays[date.getDay()];
-}
-
-function addDays(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function startOfWeekGrid(date: Date, weekStartsOn: "monday" | "sunday"): Date {
-  const next = new Date(date);
-  const day = next.getDay();
-  const offset = weekStartsOn === "monday" ? (day + 6) % 7 : day;
-  next.setDate(next.getDate() - offset);
-  next.setHours(0, 0, 0, 0);
-  return next;
 }
 
 function getCurrentTimePosition(now: Date, hourStart: number, hourEnd: number, hourHeight = 80): number | null {
@@ -7725,143 +7805,3 @@ function buildCourseMeeting({
   };
 }
 
-function groupOccurrencesByDate(occurrences: SessionOccurrence[]): Record<string, SessionOccurrence[]> {
-  return occurrences.reduce<Record<string, SessionOccurrence[]>>((acc, occurrence) => {
-    const key = formatDateKey(occurrence.date);
-    acc[key] = [...(acc[key] ?? []), occurrence];
-    return acc;
-  }, {});
-}
-
-function meetingOccursOnDate(meeting: CourseMeeting, date: Date): boolean {
-  const recurrence = meeting.recurrence ?? { cadence: "weekly", interval: 1, daysOfWeek: [meeting.day] };
-  const targetKey = formatDateKey(date);
-  const anchor = meeting.anchorDate ? new Date(meeting.anchorDate) : undefined;
-  const anchorKey = anchor ? formatDateKey(anchor) : undefined;
-  const weekDay = getWeekDayFromDate(date);
-  if (recurrence.exceptions?.includes(targetKey)) return false;
-
-  if (recurrence.until && new Date(recurrence.until).getTime() < date.getTime()) return false;
-
-  if (recurrence.cadence === "none") {
-    return anchorKey ? anchorKey === targetKey : weekDay === meeting.day;
-  }
-
-  if (recurrence.cadence === "daily") {
-    if (!anchor) return true;
-    const diff = Math.floor((startOfDay(date).getTime() - startOfDay(anchor).getTime()) / (24 * 60 * 60 * 1000));
-    return diff >= 0 && diff % Math.max(1, recurrence.interval) === 0;
-  }
-
-  if (recurrence.cadence === "weekly") {
-    const days = recurrence.daysOfWeek?.length ? recurrence.daysOfWeek : [meeting.day];
-    if (!days.includes(weekDay)) return false;
-    if (!anchor) return true;
-    const anchorWeek = startOfWeekGrid(anchor, "sunday");
-    const currentWeek = startOfWeekGrid(date, "sunday");
-    const diffWeeks = Math.round((currentWeek.getTime() - anchorWeek.getTime()) / (7 * 24 * 60 * 60 * 1000));
-    return diffWeeks >= 0 && diffWeeks % Math.max(1, recurrence.interval) === 0;
-  }
-
-  if (!anchor) return false;
-  const monthDiff = (date.getFullYear() - anchor.getFullYear()) * 12 + (date.getMonth() - anchor.getMonth());
-  return monthDiff >= 0 && monthDiff % Math.max(1, recurrence.interval) === 0 && date.getDate() === anchor.getDate();
-}
-
-function expandMeetingOccurrences(courses: Course[], rangeStart: Date, rangeEnd: Date): SessionOccurrence[] {
-  const dates: Date[] = [];
-  for (let cursor = startOfDay(rangeStart); cursor.getTime() <= startOfDay(rangeEnd).getTime(); cursor = addDays(cursor, 1)) {
-    dates.push(new Date(cursor));
-  }
-  return courses.flatMap((course) =>
-    course.meetings.flatMap((meeting) =>
-      dates
-        .filter((date) => meetingOccursOnDate(meeting, date))
-        .map((date) => ({
-          course,
-          meeting,
-          date,
-          instanceKey: `${meeting.id}-${formatDateKey(date)}`
-        }))
-    )
-  );
-}
-
-function layoutOverlappingEvents(occurrences: SessionOccurrence[]): PositionedOccurrence[] {
-  const sorted = [...occurrences].sort((a, b) => parseTimeValue(a.meeting.start) - parseTimeValue(b.meeting.start));
-  const active: PositionedOccurrence[] = [];
-  const result: PositionedOccurrence[] = [];
-
-  sorted.forEach((occurrence) => {
-    const start = parseTimeValue(occurrence.meeting.start);
-    for (let index = active.length - 1; index >= 0; index -= 1) {
-      if (parseTimeValue(active[index].meeting.end) <= start) {
-        active.splice(index, 1);
-      }
-    }
-    const usedColumns = new Set(active.map((item) => item.column));
-    let column = 0;
-    while (usedColumns.has(column)) column += 1;
-    const positioned: PositionedOccurrence = {
-      ...occurrence,
-      column,
-      totalColumns: Math.max(active.length + 1, column + 1)
-    };
-    active.push(positioned);
-    active.forEach((item) => {
-      item.totalColumns = Math.max(item.totalColumns, positioned.totalColumns);
-    });
-    result.push(positioned);
-  });
-
-  return result;
-}
-
-function detectMeetingConflicts(courses: Course[], courseId: string, draftMeeting: CourseMeeting, ignoreMeetingId?: string): string[] {
-  const previewCourse = courses.find((course) => course.id === courseId);
-  if (!previewCourse) return [];
-  const previewOccurrences = expandMeetingOccurrences([{ ...previewCourse, meetings: [draftMeeting] }], new Date(), addDays(new Date(), 60));
-  const existingOccurrences = expandMeetingOccurrences(
-    courses.map((course) => ({
-      ...course,
-      meetings: course.meetings.filter((meeting) => meeting.id !== ignoreMeetingId)
-    })),
-    new Date(),
-    addDays(new Date(), 60)
-  );
-  const conflicts = new Set<string>();
-  previewOccurrences.forEach((preview) => {
-    existingOccurrences.forEach((existing) => {
-      if (formatDateKey(preview.date) !== formatDateKey(existing.date)) return;
-      if (preview.meeting.isAllDay || existing.meeting.isAllDay) {
-        conflicts.add(`${existing.course.name} on ${existing.date.toLocaleDateString()}`);
-        return;
-      }
-      const previewStart = parseTimeValue(preview.meeting.start);
-      const previewEnd = parseTimeValue(preview.meeting.end);
-      const existingStart = parseTimeValue(existing.meeting.start);
-      const existingEnd = parseTimeValue(existing.meeting.end);
-      if (previewStart < existingEnd && existingStart < previewEnd) {
-        conflicts.add(`${existing.course.name} on ${existing.date.toLocaleDateString()} at ${existing.meeting.start}`);
-      }
-    });
-  });
-  return [...conflicts].slice(0, 5);
-}
-
-function formatSessionType(type?: CourseMeeting["type"]): string {
-  switch (type) {
-    case "lab":
-      return "Lab";
-    case "tutorial":
-      return "Tirgul";
-    case "office-hours":
-      return "Office hours";
-    case "exam":
-      return "Exam";
-    case "study":
-      return "Study block";
-    default:
-      return "Lecture";
-  }
-}
