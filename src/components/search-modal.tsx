@@ -21,7 +21,8 @@ export function SearchModal({
     task: "task",
     course: "course",
     note: "note",
-    feature: "feature"
+    feature: "feature",
+    command: "go"
   };
 
   return (
@@ -33,7 +34,7 @@ export function SearchModal({
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search tasks, courses, notes, and features..."
+            placeholder='Search tasks, courses, notes — try "guide", "week", "feedback", "kanban"...'
             className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm dark:border-white/10 dark:bg-white/5"
           />
         </div>

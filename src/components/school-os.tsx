@@ -1,6 +1,17 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type ReactNode
+} from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -77,8 +88,10 @@ import { indexHolidayChipsByDate, readCachedHolidayYear, writeCachedHolidayYear 
 import { pushSchoolOsToast } from "@/lib/global-app-toasts";
 import {
   academicWeekKeyFromAnchor,
+  findRecordingCatchUpDueAt,
   getAcademicWeekSunThu,
   getLastThursdaySessionEndInWeek,
+  lastScheduledLectureTutorialEndInSunThuWeek,
   listCatchUpOccurrences,
   sortCatchUpOccurrencesBySchedule
 } from "@/lib/academic-week-catchup";
@@ -96,6 +109,7 @@ import {
   startOfWeekGrid,
   type SessionOccurrence
 } from "@/lib/calendar-occurrences";
+import { CatchUpWeekNotReadyModal } from "@/components/catch-up-week-not-ready-modal";
 import { WeeklyCatchUpModal } from "@/components/weekly-catch-up-modal";
 
 const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ className?: string }> }> = [
@@ -113,6 +127,12 @@ const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ class
 /** Survives remounts so “Class finished” only nags once per session instance. */
 const POST_SESSION_PROMPT_STORAGE_KEY = "school-os-post-session-prompt-dismissed:v1";
 const ADMIN_EMAILS = new Set(["gidon.greeblatt@gmail.com", "gidon.greenblatt@gmail.com"]);
+const DEMO_WEEKLY_CATCHUP_TASK_TAG = "demo-weekly-catchup";
+
+function isCatchUpDemoUser(email: string | undefined | null): boolean {
+  if (!email) return false;
+  return ADMIN_EMAILS.has(email.trim().toLowerCase());
+}
 const MAX_FEATURE_REQUEST_SCREENSHOTS = 3;
 const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
@@ -566,6 +586,13 @@ export function SchoolOS() {
   const [weeklyCatchUpOccurrences, setWeeklyCatchUpOccurrences] = useState<SessionOccurrence[]>([]);
   const [weeklyCatchUpWeekKey, setWeeklyCatchUpWeekKey] = useState("");
   const [weeklyCatchUpWeekLabel, setWeeklyCatchUpWeekLabel] = useState("");
+  /** Soft-glow ring for new “watch recording” tasks after Generate → Go to tasks; cleared as soon as the user navigates away from Kanban. */
+  const [catchUpGlowTaskIds, setCatchUpGlowTaskIds] = useState<string[]>([]);
+  const [catchUpWeekNotReadyOpen, setCatchUpWeekNotReadyOpen] = useState(false);
+  const [catchUpWeekNotReadyPayload, setCatchUpWeekNotReadyPayload] = useState<{ weekLabel: string; lastEnd: Date } | null>(null);
+  /** Owner-only: demo flow skips persistence and deletes tasks after leaving Kanban (or closing modal). */
+  const [weeklyCatchUpDemo, setWeeklyCatchUpDemo] = useState(false);
+  const weeklyCatchUpDemoTaskIdsRef = useRef<string[]>([]);
   const [newCourseName, setNewCourseName] = useState("");
   const [newCourseCode, setNewCourseCode] = useState("");
   const [newCourseColor, setNewCourseColor] = useState(coursePalette[0]);
@@ -794,13 +821,23 @@ export function SchoolOS() {
     });
   }, [dispatch]);
 
+  const openQuickFeedbackShortcut = useCallback(() => {
+    setIsSettingsOpen(true);
+    window.setTimeout(() => {
+      const el = document.querySelector("[data-onboarding='feature-request-panel']");
+      if (el instanceof HTMLElement) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        const ta = el.querySelector("textarea");
+        if (ta instanceof HTMLTextAreaElement) {
+          ta.focus();
+        }
+      }
+    }, 160);
+  }, []);
+
   useKeyboardShortcuts({
-    openComposer: () => dispatch({ type: "set-composer", payload: true }),
-    openSessionComposer: () => {
-      setSessionDraft({ anchorDate: selectedCalendarDate });
-      setIsSessionEditorOpen(true);
-    },
     openSearch: () => dispatch({ type: "set-search", payload: true }),
+    openQuickFeedback: openQuickFeedbackShortcut,
     undoCalendarChange,
     undoTaskToggle,
     markFocusedDone: () => {
@@ -1440,10 +1477,74 @@ export function SchoolOS() {
       const featureCatalog: Array<{ id: string; title: string; subtitle: string; terms: string; score: number }> = [
         {
           id: "feature-request-panel",
-          title: "Request a missing feature",
-          subtitle: "Settings → feedback request box",
-          terms: "feature request feedback bug report suggestion request box",
-          score: 11
+          title: "Feedback & bugs (request box)",
+          subtitle: "Settings → send features, bugs, or QR issues",
+          terms:
+            "feedback bug bugs feature request user request report issue problem qr suggestion request box missing broken",
+          score: 14
+        },
+        {
+          id: "cmd-open-guide",
+          title: "Guide",
+          subtitle: "Shortcuts, replay onboarding",
+          terms: "guide help shortcuts keyboard utility tour onboarding replay book",
+          score: 13
+        },
+        {
+          id: "cmd-calendar-week",
+          title: "Calendar — week view",
+          subtitle: "Open Calendar in week layout",
+          terms: "week weekly calendar schedule timetable",
+          score: 12
+        },
+        {
+          id: "cmd-calendar-day",
+          title: "Calendar — day view",
+          subtitle: "Open Calendar in day layout",
+          terms: "day daily calendar agenda",
+          score: 12
+        },
+        {
+          id: "cmd-calendar-month",
+          title: "Calendar — month view",
+          subtitle: "Open Calendar in month layout",
+          terms: "month monthly calendar overview",
+          score: 12
+        },
+        {
+          id: "cmd-dashboard",
+          title: "Dashboard",
+          subtitle: "Main overview",
+          terms: "dashboard home overview metrics",
+          score: 10
+        },
+        {
+          id: "cmd-kanban",
+          title: "Kanban",
+          subtitle: "Board view for tasks",
+          terms: "kanban board tasks swimlane",
+          score: 10
+        },
+        {
+          id: "cmd-class-notes",
+          title: "Class Notes",
+          subtitle: "Lecture notes and drafts",
+          terms: "class notes lecture summaries notes tab",
+          score: 10
+        },
+        {
+          id: "cmd-courses",
+          title: "Courses",
+          subtitle: "Course list and catalog",
+          terms: "courses catalog roadmap",
+          score: 9
+        },
+        {
+          id: "cmd-settings",
+          title: "Settings",
+          subtitle: "Account, degree, preferences",
+          terms: "settings account preferences sign out degree theme",
+          score: 9
         },
         {
           id: "user-requests-tab",
@@ -1465,7 +1566,7 @@ export function SchoolOS() {
         .filter((item) => `${item.title} ${item.subtitle} ${item.terms}`.toLowerCase().includes(q))
         .map((item) => ({
           id: item.id,
-          kind: "feature" as const,
+          kind: (item.id.startsWith("cmd-") ? "command" : "feature") as "command" | "feature",
           title: item.title,
           subtitle: item.subtitle,
           score: item.score + Number(item.title.toLowerCase().includes(q))
@@ -1473,7 +1574,7 @@ export function SchoolOS() {
 
       return [...base, ...noteResults, ...featureResults]
         .sort((a, b) => b.score - a.score)
-        .slice(0, 16);
+        .slice(0, 24);
     },
     [searchQuery, state.tasks, state.courses, state.classNotes]
   );
@@ -1698,6 +1799,9 @@ export function SchoolOS() {
       const triggerAt = getLastThursdaySessionEndInWeek(occ, weekSunday);
       if (now.getTime() < triggerAt.getTime()) return;
       dispatch({ type: "set-catch-up-prompt-week", payload: weekKey });
+      // Rolling forward to a new academic week — drop submitted locks for older weeks so they re-open as editable history.
+      dispatch({ type: "prune-catch-up-submitted-weeks", payload: { beforeWeekKey: weekKey } });
+      setWeeklyCatchUpDemo(false);
       openWeeklyCatchUpRef.current(now);
     };
     tick();
@@ -1712,17 +1816,74 @@ export function SchoolOS() {
     };
   }, [ready, activeCourses, state.ui?.catchUpPromptedWeekKey, dispatch]);
 
-  const handleOpenWeeklyCatchUpFromCalendar = useCallback(
+  const submittedCatchUpWeeks = useMemo(
+    () => new Set(state.ui?.catchUpSubmittedWeekKeys ?? []),
+    [state.ui?.catchUpSubmittedWeekKeys]
+  );
+  const isWeekKeySubmitted = useCallback((weekKey: string) => submittedCatchUpWeeks.has(weekKey), [submittedCatchUpWeeks]);
+
+  const purgeWeeklyCatchUpDemoTasks = useCallback(() => {
+    const ids = weeklyCatchUpDemoTaskIdsRef.current;
+    if (ids.length === 0) return;
+    weeklyCatchUpDemoTaskIdsRef.current = [];
+    setWeeklyCatchUpDemo(false);
+    for (const id of ids) {
+      dispatch({ type: "delete-task", payload: id });
+    }
+  }, [dispatch]);
+
+  const handleWeeklyCatchUpRequestFromCalendar = useCallback(
     (weekAnchorDate: Date) => {
+      const weekKey = academicWeekKeyFromAnchor(weekAnchorDate);
+      if (isWeekKeySubmitted(weekKey)) {
+        setWeeklyCatchUpDemo(false);
+        openWeeklyCatchUpForAnchor(weekAnchorDate);
+        return;
+      }
+      const lastEnd = lastScheduledLectureTutorialEndInSunThuWeek(weekAnchorDate, activeCourses);
+      const now = new Date();
+      if (now.getTime() < lastEnd.getTime()) {
+        const { start, end } = getAcademicWeekSunThu(weekAnchorDate);
+        const weekLabel = `${start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+        setCatchUpWeekNotReadyPayload({ weekLabel, lastEnd });
+        setCatchUpWeekNotReadyOpen(true);
+        return;
+      }
+      setWeeklyCatchUpDemo(false);
       openWeeklyCatchUpForAnchor(weekAnchorDate);
     },
-    [openWeeklyCatchUpForAnchor]
+    [activeCourses, isWeekKeySubmitted, openWeeklyCatchUpForAnchor]
   );
 
+  const handleDemoWeeklyCatchUp = useCallback(() => {
+    const candidates: Date[] = [];
+    const base = selectedCalendarDate;
+    for (let w = 0; w < 16; w++) {
+      const d = new Date(base);
+      d.setDate(d.getDate() - 7 * w);
+      const { start, end } = getAcademicWeekSunThu(d);
+      const occ = listCatchUpOccurrences(activeCourses, start, end);
+      if (occ.length > 0) {
+        candidates.push(start);
+      }
+    }
+    if (candidates.length === 0) {
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Demo: no recent weeks with Sun–Thu lectures or Tirgul found."
+      });
+      return;
+    }
+    const anchor = candidates[Math.floor(Math.random() * candidates.length)]!;
+    setWeeklyCatchUpDemo(true);
+    openWeeklyCatchUpForAnchor(anchor);
+  }, [activeCourses, selectedCalendarDate, openWeeklyCatchUpForAnchor]);
+
   const handleWeeklyCatchUpGenerate = useCallback(
-    (attendedInstanceKeys: Set<string>) => {
+    (attendedInstanceKeys: Set<string>, mode: "initial" | "edit") => {
       const weekTag = `catchup-week-${weeklyCatchUpWeekKey}`;
-      let created = 0;
+      const newTaskIds: string[] = [];
+      const isDemo = weeklyCatchUpDemo;
       for (const occ of weeklyCatchUpOccurrences) {
         if (attendedInstanceKeys.has(occ.instanceKey)) continue;
         const dedupeTag = `catchup:${occ.instanceKey}`;
@@ -1732,27 +1893,64 @@ export function SchoolOS() {
         const courseName = occ.course.name?.trim();
         const coursePart =
           courseName && courseName !== occ.course.code.trim() ? `${courseName} (${occ.course.code})` : occ.course.code;
+        const dueAt = findRecordingCatchUpDueAt(activeCourses, occ);
+        const baseDescription = `Catch up for ${coursePart} on ${dateStr} ${occ.meeting.start}–${occ.meeting.end}`;
+        const deadlineNote = dueAt
+          ? ` Due before your next lecture/tutorial in this course (${new Date(dueAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}).`
+          : " No later lecture/tutorial found on your calendar in the next year — add a due date manually if you want one.";
+        const taskId = createId("task");
+        const tags = isDemo
+          ? (["recording-catchup", weekTag, dedupeTag, DEMO_WEEKLY_CATCHUP_TASK_TAG] as string[])
+          : (["recording-catchup", weekTag, dedupeTag] as string[]);
         addTask({
+          id: taskId,
           title: `Watch recording: ${coursePart} — ${sessionLabel}`,
-          description: `Catch up for ${coursePart} on ${dateStr} ${occ.meeting.start}–${occ.meeting.end}`,
+          description: `${baseDescription}.${deadlineNote}`,
           courseId: occ.course.id,
           status: "backlog",
-          tags: ["recording-catchup", weekTag, dedupeTag]
+          dueAt,
+          tags
         });
-        created += 1;
+        newTaskIds.push(taskId);
       }
-      dispatch({ type: "set-catch-up-prompt-week", payload: weeklyCatchUpWeekKey });
-      if (created > 0) {
-        dispatch({ type: "set-course-filter", payload: "all" });
+      if (isDemo) {
+        weeklyCatchUpDemoTaskIdsRef.current = newTaskIds;
+      } else {
+        weeklyCatchUpDemoTaskIdsRef.current = [];
+        dispatch({ type: "set-catch-up-prompt-week", payload: weeklyCatchUpWeekKey });
+        dispatch({ type: "add-catch-up-submitted-week", payload: weeklyCatchUpWeekKey });
       }
-      pushSchoolOsToast({
-        kind: "success",
-        message: created > 0 ? `Added ${created} catch-up task(s).` : "No new tasks (all attended or already added)."
-      });
+      if (mode === "edit") {
+        pushSchoolOsToast({
+          kind: "success",
+          message: newTaskIds.length > 0 ? `Updated catch-up — added ${newTaskIds.length} task(s).` : "Catch-up updated. No new tasks added."
+        });
+      }
+      return { created: newTaskIds.length, newTaskIds };
+    },
+    [weeklyCatchUpOccurrences, weeklyCatchUpWeekKey, state.tasks, activeCourses, addTask, dispatch, weeklyCatchUpDemo]
+  );
+
+  const handleWeeklyCatchUpGoToTasks = useCallback(
+    (newTaskIds: string[]) => {
+      setCatchUpGlowTaskIds(newTaskIds);
+      setKanbanTab("board");
+      dispatch({ type: "set-course-filter", payload: "all" });
+      dispatch({ type: "set-view", payload: "kanban" });
       setWeeklyCatchUpOpen(false);
     },
-    [weeklyCatchUpOccurrences, weeklyCatchUpWeekKey, state.tasks, addTask, dispatch]
+    [dispatch]
   );
+
+  /** Glow clears when leaving Kanban; demo catch-up tasks are removed then too (or when the modal closes). */
+  useEffect(() => {
+    if (state.ui.activeView !== "kanban") {
+      if (catchUpGlowTaskIds.length > 0) {
+        setCatchUpGlowTaskIds([]);
+      }
+      purgeWeeklyCatchUpDemoTasks();
+    }
+  }, [state.ui.activeView, catchUpGlowTaskIds.length, purgeWeeklyCatchUpDemoTasks]);
 
   const openClassNoteDraftForSession = useCallback(
     (courseId: string, meetingId: string, anchorDate: Date) => {
@@ -1851,13 +2049,15 @@ export function SchoolOS() {
 
   useEffect(() => {
     const onCalendarKeyDown = (event: KeyboardEvent) => {
-      if (state.ui.activeView !== "calendar") return;
+      const onCalendar = state.ui.activeView === "calendar";
+      const onClassNotes = state.ui.activeView === "class-notes";
+      if (!onCalendar && !onClassNotes) return;
       if (!selectedCalendarSession || !selectedSessionCourse || !selectedSessionMeeting) return;
       const target = event.target as HTMLElement | null;
       const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       if (typing) return;
 
-      if (event.key === "Delete" || event.key === "Backspace") {
+      if (onCalendar && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         event.stopPropagation();
         const recurrenceCadence = selectedSessionMeeting.recurrence?.cadence ?? "weekly";
@@ -1878,14 +2078,14 @@ export function SchoolOS() {
         openClassNoteDraftForSession(selectedCalendarSession.courseId, selectedCalendarSession.meetingId, selectedCalendarSession.anchorDate);
         return;
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+      if (onCalendar && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
         event.preventDefault();
         event.stopPropagation();
         setCopiedSessionMeeting({ ...selectedSessionMeeting });
         pushSchoolOsToast({ kind: "success", message: "Session copied." });
         return;
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v" && copiedSessionMeeting) {
+      if (onCalendar && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v" && copiedSessionMeeting) {
         event.preventDefault();
         event.stopPropagation();
         const day = getWeekDayFromDate(selectedCalendarDate);
@@ -2527,6 +2727,7 @@ export function SchoolOS() {
                 onFocus={handleFocusTask}
                 onToggleDone={handleKanbanToggleDone}
                 onOpenComposer={handleOpenComposer}
+                glowTaskIds={catchUpGlowTaskIds}
               />
             </div>
           )}
@@ -2562,7 +2763,20 @@ export function SchoolOS() {
               tentativeChoiceTitle={activeChoiceSet?.label}
               onPickTentativeOption={selectTentativeCalendarOption}
               newlyAddedCourseId={onboardingCourseGlowId}
-              onOpenWeeklyCatchUp={handleOpenWeeklyCatchUpFromCalendar}
+              onOpenWeeklyCatchUp={handleWeeklyCatchUpRequestFromCalendar}
+              catchUpOwnerToolbar={
+                isCatchUpDemoUser(user?.email) ? (
+                  <Button
+                    variant="outline"
+                    className="h-8 shrink-0 text-xs"
+                    type="button"
+                    title="Random Sun–Thu week with sessions; tasks vanish when you leave Kanban or close after generating."
+                    onClick={handleDemoWeeklyCatchUp}
+                  >
+                    Demo catch-up
+                  </Button>
+                ) : null
+              }
             />
           )}
           {state.ui.activeView === "courses" && (
@@ -2850,8 +3064,19 @@ export function SchoolOS() {
             <Panel className="bg-white/92 dark:bg-[#101317]/92">
               <h3 className="mb-2 font-semibold">Keyboard</h3>
               <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
-                <li>`N` or Hebrew `מ` add task</li>
-                <li>`Cmd/Ctrl + K` search</li>
+                <li>
+                  <span className="font-medium text-slate-600 dark:text-slate-300">N</span> or Hebrew{" "}
+                  <span className="font-medium text-slate-600 dark:text-slate-300">מ</span> — new class note for the{" "}
+                  <strong>selected calendar session</strong> only (Calendar with a session highlighted, or Class Notes with that session
+                  still selected). Does not open the session editor or task composer; add sessions on the calendar by dragging or clicking
+                  existing events.
+                </li>
+                <li>
+                  <span className="font-medium text-slate-600 dark:text-slate-300">⌘⇧U</span> /{" "}
+                  <span className="font-medium text-slate-600 dark:text-slate-300">Ctrl+Shift+U</span> — open the{" "}
+                  <strong>feedback & bugs</strong> box in Settings (fast path for QR helpers).
+                </li>
+                <li>`Cmd/Ctrl + K` or `/` — search (tasks, courses, notes, navigation)</li>
                 <li>`X` mark focused task done</li>
                 <li>`1`-`7` switch views without ⌘/Ctrl — same order as the sidebar (⌘+digit is left to the browser for tabs)</li>
               </ul>
@@ -3544,8 +3769,22 @@ export function SchoolOS() {
         open={weeklyCatchUpOpen}
         weekLabel={weeklyCatchUpWeekLabel}
         occurrences={weeklyCatchUpOccurrences}
-        onClose={() => setWeeklyCatchUpOpen(false)}
+        alreadySubmitted={weeklyCatchUpDemo ? false : isWeekKeySubmitted(weeklyCatchUpWeekKey)}
+        onClose={() => {
+          purgeWeeklyCatchUpDemoTasks();
+          setWeeklyCatchUpOpen(false);
+        }}
         onGenerate={handleWeeklyCatchUpGenerate}
+        onGoToTasks={handleWeeklyCatchUpGoToTasks}
+      />
+      <CatchUpWeekNotReadyModal
+        open={catchUpWeekNotReadyOpen}
+        weekLabel={catchUpWeekNotReadyPayload?.weekLabel ?? ""}
+        lastSessionEnd={catchUpWeekNotReadyPayload?.lastEnd ?? new Date()}
+        onClose={() => {
+          setCatchUpWeekNotReadyOpen(false);
+          setCatchUpWeekNotReadyPayload(null);
+        }}
       />
 
       {state.ui.showSearch && (
@@ -3564,21 +3803,49 @@ export function SchoolOS() {
             } else if (result.kind === "note") {
               dispatch({ type: "set-view", payload: "class-notes" });
               setClassNoteEditorId(result.id);
-            } else if (result.kind === "feature") {
+            } else if (result.kind === "feature" || result.kind === "command") {
               if (result.id === "user-requests-tab" && isAdmin) {
                 dispatch({ type: "set-view", payload: "user-requests" });
+              } else if (result.id === "cmd-open-guide") {
+                setIsUtilityOpen(true);
+              } else if (result.id === "cmd-calendar-week") {
+                dispatch({ type: "set-view", payload: "calendar" });
+                setCalendarMode("week");
+              } else if (result.id === "cmd-calendar-day") {
+                dispatch({ type: "set-view", payload: "calendar" });
+                setCalendarMode("day");
+              } else if (result.id === "cmd-calendar-month") {
+                dispatch({ type: "set-view", payload: "calendar" });
+                setCalendarMode("month");
+              } else if (result.id === "cmd-dashboard") {
+                dispatch({ type: "set-view", payload: "dashboard" });
+              } else if (result.id === "cmd-kanban") {
+                dispatch({ type: "set-view", payload: "kanban" });
+              } else if (result.id === "cmd-class-notes") {
+                dispatch({ type: "set-view", payload: "class-notes" });
+              } else if (result.id === "cmd-courses") {
+                dispatch({ type: "set-view", payload: "courses" });
+              } else if (result.id === "cmd-settings") {
+                setIsSettingsOpen(true);
               } else {
                 setIsSettingsOpen(true);
-                const selector = result.id === "feature-request-panel"
-                  ? "[data-onboarding='feature-request-panel']"
-                  : result.id === "settings-degree-panel"
-                    ? "[data-onboarding='settings-degree-panel']"
-                    : null;
+                const selector =
+                  result.id === "feature-request-panel"
+                    ? "[data-onboarding='feature-request-panel']"
+                    : result.id === "settings-degree-panel"
+                      ? "[data-onboarding='settings-degree-panel']"
+                      : null;
                 if (selector) {
                   window.setTimeout(() => {
                     const el = document.querySelector(selector);
                     if (el instanceof HTMLElement) {
                       el.scrollIntoView({ behavior: "smooth", block: "center" });
+                      if (result.id === "feature-request-panel") {
+                        const ta = el.querySelector("textarea");
+                        if (ta instanceof HTMLTextAreaElement) {
+                          ta.focus();
+                        }
+                      }
                     }
                   }, 120);
                 }
@@ -3607,7 +3874,10 @@ function DashboardView({
   onToggleDone: (id: string) => void;
   onFocus: (id: string) => void;
   focusedTaskId?: string;
-  analytics: { completed: Record<string, number>; workload: Array<{ name: string; total: number; color: string }> };
+  analytics: {
+    completed: Record<string, number>;
+    workload: Array<{ courseId: string; name: string; total: number; color: string }>;
+  };
 }) {
   return (
     <div className="grid gap-4 xl:grid-cols-[1.3fr_0.92fr]">
@@ -3639,7 +3909,7 @@ function DashboardView({
           <h3 className="mb-3 text-base font-semibold">Workload by Course</h3>
           <div className="space-y-1">
             {analytics.workload.slice(0, 6).map((item) => (
-              <div key={item.name} className="flex items-center justify-between rounded-2xl px-2 py-1.5 text-sm">
+              <div key={item.courseId} className="flex items-center justify-between rounded-2xl px-2 py-1.5 text-sm">
                 <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full" style={{ background: item.color }} />{item.name}</span>
                 <span className="text-slate-500">{item.total} pts</span>
               </div>
@@ -3751,7 +4021,8 @@ function KanbanView({
   onDelete,
   onFocus,
   onToggleDone,
-  onOpenComposer
+  onOpenComposer,
+  glowTaskIds
 }: {
   tasks: Task[];
   tab: "board" | "completed";
@@ -3767,7 +4038,10 @@ function KanbanView({
   onFocus: (id: string) => void;
   onToggleDone: (id: string) => void;
   onOpenComposer: (courseId?: string | "general") => void;
+  /** Tasks to highlight with a soft animated glow (one-shot, view-scoped). */
+  glowTaskIds?: string[];
 }) {
+  const glowSet = useMemo(() => new Set(glowTaskIds ?? []), [glowTaskIds]);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [sortModeByGroup, setSortModeByGroup] = useState<Record<string, "date" | "priority">>({});
   const bookedBlockByTaskId = useMemo(() => buildBookedBlockByTaskId(workBlocks), [workBlocks]);
@@ -3974,7 +4248,7 @@ function KanbanView({
                           onFocus(task.id);
                         }
                       }}
-                      className="group grid cursor-pointer grid-cols-[40px_1.35fr_1.6fr_1fr_0.9fr_0.85fr_0.8fr_52px] items-center border-b border-slate-200/70 px-4 py-3 text-sm transition hover:bg-slate-50/60 dark:border-white/10 dark:hover:bg-white/[0.04]"
+                      className={`group grid cursor-pointer grid-cols-[40px_1.35fr_1.6fr_1fr_0.9fr_0.85fr_0.8fr_52px] items-center border-b border-slate-200/70 px-4 py-3 text-sm transition hover:bg-slate-50/60 dark:border-white/10 dark:hover:bg-white/[0.04] ${glowSet.has(task.id) ? "catchup-glow rounded-xl" : ""}`}
                     >
                       <button
                         onClick={(event) => {
@@ -4107,7 +4381,8 @@ function CalendarView({
   tentativeChoiceTitle,
   onPickTentativeOption,
   newlyAddedCourseId,
-  onOpenWeeklyCatchUp
+  onOpenWeeklyCatchUp,
+  catchUpOwnerToolbar
 }: {
   tasks: Task[];
   workBlocks: WorkBlock[];
@@ -4155,6 +4430,8 @@ function CalendarView({
   newlyAddedCourseId?: string | null;
   /** Week view: Sun–Thu catch-up + progress; anchor = Sunday-based week to open (e.g. pane’s week during transition). */
   onOpenWeeklyCatchUp?: (weekAnchorDate: Date) => void;
+  /** Optional extra controls next to “Weekly catch-up” (e.g. owner demo / reset). */
+  catchUpOwnerToolbar?: ReactNode;
 }) {
   const visibleCourses = useMemo(() => courses.filter((course) => visibleCourseIds.includes(course.id)), [courses, visibleCourseIds]);
   const unrelatedSessionsCourse = useMemo(
@@ -5044,14 +5321,20 @@ function CalendarView({
                 </Button>
               </div>
               {onOpenWeeklyCatchUp ? (
-                <Button
-                  variant="outline"
-                  className="h-8 shrink-0 text-xs"
-                  type="button"
-                  onClick={() => onOpenWeeklyCatchUp(catchUpAnchorDate)}
-                >
-                  Weekly catch-up
-                </Button>
+                <>
+                  {catchUpOwnerToolbar}
+                  <Button
+                    variant="outline"
+                    className="h-8 shrink-0 text-xs"
+                    type="button"
+                    title="Sun–Thu attendance → recording catch-up tasks"
+                    onClick={() => {
+                      onOpenWeeklyCatchUp(catchUpAnchorDate);
+                    }}
+                  >
+                    Weekly catch-up
+                  </Button>
+                </>
               ) : null}
             </div>
           </div>
@@ -5590,14 +5873,20 @@ function CalendarView({
             </Button>
           </div>
           {onOpenWeeklyCatchUp ? (
-            <Button
-              variant="outline"
-              className="h-8 shrink-0 text-xs"
-              type="button"
-              onClick={() => onOpenWeeklyCatchUp(selectedDate)}
-            >
-              Weekly catch-up
-            </Button>
+            <>
+              {catchUpOwnerToolbar}
+              <Button
+                variant="outline"
+                className="h-8 shrink-0 text-xs"
+                type="button"
+                title="Sun–Thu attendance → recording catch-up tasks"
+                onClick={() => {
+                  onOpenWeeklyCatchUp(selectedDate);
+                }}
+              >
+                Weekly catch-up
+              </Button>
+            </>
           ) : null}
           </div>
         </div>

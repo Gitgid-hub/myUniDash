@@ -18,6 +18,12 @@ const AuthContext = createContext<AuthContextValue>({
   session: null
 });
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const enabled = isSupabaseConfigured();
   const [loading, setLoading] = useState(enabled);
@@ -29,87 +35,61 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Never block the shell forever — createClient / getSession / onAuthStateChange can throw or hang.
-    const hardCap = window.setTimeout(() => {
-      console.warn("Supabase auth: forcing loading off (init took > 3.5s).");
-      setLoading(false);
-    }, 3_500);
-
+    let cancelled = false;
     let mounted = true;
-    const safetyTimer = window.setTimeout(() => {
-      if (!mounted) return;
-      console.warn("Supabase auth: getSession took too long; continuing without session.");
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setSession(null);
       setLoading(false);
-    }, 10_000);
-
-    const clearSafety = () => window.clearTimeout(safetyTimer);
-    const clearHard = () => window.clearTimeout(hardCap);
-
-    const stopBlockingUi = () => {
-      clearSafety();
-      clearHard();
-      setLoading(false);
-    };
-
-    try {
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        if (mounted) setSession(null);
-        stopBlockingUi();
-        return;
-      }
-
-      supabase.auth
-        .getSession()
-        .then(({ data, error }) => {
-          if (!mounted) return;
-          if (error) {
-            console.error("Supabase getSession failed:", error.message);
-            setSession(null);
-          } else {
-            setSession(data.session ?? null);
-          }
-          stopBlockingUi();
-        })
-        .catch((err: unknown) => {
-          console.error("Supabase getSession error:", err);
-          if (!mounted) return;
-          setSession(null);
-          stopBlockingUi();
-        });
-
-      let authSubscription: Subscription | null = null;
-      try {
-        const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-          if (!mounted) return;
-          setSession(nextSession);
-          stopBlockingUi();
-        });
-        authSubscription = data.subscription;
-      } catch (subErr) {
-        console.error("Supabase onAuthStateChange failed:", subErr);
-        stopBlockingUi();
-        return () => {
-          mounted = false;
-          clearSafety();
-          clearHard();
-        };
-      }
-
-      return () => {
-        mounted = false;
-        clearSafety();
-        clearHard();
-        authSubscription?.unsubscribe();
-      };
-    } catch (err) {
-      console.error("Supabase auth setup failed:", err);
-      clearSafety();
-      clearHard();
-      if (mounted) setSession(null);
-      setLoading(false);
-      return undefined;
+      return;
     }
+
+    let authSubscription: Subscription | null = null;
+    try {
+      const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+        if (!mounted) return;
+        setSession(nextSession);
+        setLoading(false);
+      });
+      authSubscription = data.subscription;
+    } catch (subErr) {
+      console.error("Supabase onAuthStateChange failed:", subErr);
+      setLoading(false);
+      return;
+    }
+
+    const sessionPromise = supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (!mounted) return;
+        if (error) {
+          console.error("Supabase getSession failed:", error.message);
+          setSession(null);
+        } else {
+          setSession(data.session ?? null);
+        }
+      })
+      .catch((err: unknown) => {
+        console.error("Supabase getSession error:", err);
+        if (!mounted) return;
+        setSession(null);
+      });
+
+    void (async () => {
+      try {
+        await Promise.race([sessionPromise, delay(3_500)]);
+        if (cancelled) return;
+        setLoading(false);
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      mounted = false;
+      authSubscription?.unsubscribe();
+    };
   }, [enabled]);
 
   const value = useMemo<AuthContextValue>(

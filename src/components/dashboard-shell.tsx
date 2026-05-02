@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { SchoolOS } from "@/components/school-os";
 import { AuthScreen } from "@/components/auth-screen";
 import { useAuth } from "@/lib/auth";
@@ -9,21 +9,8 @@ import { LocalStorageStore } from "@/lib/storage";
 import { SchoolStoreProvider } from "@/lib/store";
 import type { Store } from "@/lib/types";
 
-const AUTH_SPLASH_MIN_MS = 3000;
-
 export function DashboardShell() {
   const { enabled, loading, user } = useAuth();
-  const [authSplashMinElapsed, setAuthSplashMinElapsed] = useState(false);
-
-  useEffect(() => {
-    if (!enabled) {
-      setAuthSplashMinElapsed(true);
-      return;
-    }
-    setAuthSplashMinElapsed(false);
-    const id = window.setTimeout(() => setAuthSplashMinElapsed(true), AUTH_SPLASH_MIN_MS);
-    return () => window.clearTimeout(id);
-  }, [enabled]);
 
   /** Stable per account — avoid new `SupabaseStateStore` on every `user` object reference churn from `onAuthStateChange`. */
   const cloudUserId = enabled ? user?.id : undefined;
@@ -34,8 +21,8 @@ export function DashboardShell() {
     return new LocalStorageStore();
   }, [cloudUserId]);
 
-  /** Logged-in users should not depend on the 3s timer (it can fail to fire if the effect is churned); keep min splash only while auth is resolving or signed-out. */
-  const showAuthSplash = Boolean(enabled && (loading || (!user && !authSplashMinElapsed)));
+  /** Splash only while Supabase auth is resolving — no fixed delay after session is known (avoids “stuck” signed-out UX). */
+  const showAuthSplash = Boolean(enabled && loading);
 
   if (showAuthSplash) {
     return (

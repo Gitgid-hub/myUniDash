@@ -108,13 +108,16 @@ export function completedByWeek(tasks: Task[]): Record<string, number> {
     }, {});
 }
 
-export function workloadByCourse(tasks: Task[], courses: Course[]): Array<{ name: string; total: number; color: string }> {
+export function workloadByCourse(
+  tasks: Task[],
+  courses: Course[]
+): Array<{ courseId: string; name: string; total: number; color: string }> {
   return courses
     .map((course) => {
       const total = tasks
         .filter((task) => task.courseId === course.id && task.status !== "done")
         .reduce((acc, task) => acc + task.effort, 0);
-      return { name: course.name, total, color: course.color };
+      return { courseId: course.id, name: course.name, total, color: course.color };
     })
     .filter((entry) => entry.total > 0)
     .sort((a, b) => b.total - a.total);

@@ -64,6 +64,9 @@ type Action =
   | { type: "set-course-filter"; payload: ID | "all" }
   | { type: "set-onboarding-complete"; payload?: string }
   | { type: "set-catch-up-prompt-week"; payload?: string }
+  | { type: "add-catch-up-submitted-week"; payload: string }
+  | { type: "remove-catch-up-submitted-week"; payload: string }
+  | { type: "prune-catch-up-submitted-weeks"; payload: { beforeWeekKey: string } }
   | { type: "add-task"; payload: TaskInput }
   | { type: "update-task"; payload: Partial<Task> & { id: ID } }
   | { type: "toggle-task-done"; payload: ID }
@@ -156,7 +159,10 @@ function normalizeState(state: SchoolState): SchoolState {
       showSearch: state.ui?.showSearch ?? false,
       focusedTaskId: state.ui?.focusedTaskId,
       onboardingCompletedAt: state.ui?.onboardingCompletedAt,
-      catchUpPromptedWeekKey: state.ui?.catchUpPromptedWeekKey
+      catchUpPromptedWeekKey: state.ui?.catchUpPromptedWeekKey,
+      catchUpSubmittedWeekKeys: Array.isArray(state.ui?.catchUpSubmittedWeekKeys)
+        ? Array.from(new Set(state.ui!.catchUpSubmittedWeekKeys.filter((k): k is string => typeof k === "string")))
+        : []
     }
   };
 }
@@ -224,6 +230,23 @@ function reducer(state: SchoolState, action: Action): SchoolState {
       return { ...state, ui: { ...state.ui, onboardingCompletedAt: action.payload ?? nowIso() } };
     case "set-catch-up-prompt-week":
       return { ...state, ui: { ...state.ui, catchUpPromptedWeekKey: action.payload } };
+    case "add-catch-up-submitted-week": {
+      const existing = state.ui.catchUpSubmittedWeekKeys ?? [];
+      if (existing.includes(action.payload)) return state;
+      return { ...state, ui: { ...state.ui, catchUpSubmittedWeekKeys: [...existing, action.payload] } };
+    }
+    case "remove-catch-up-submitted-week": {
+      const existing = state.ui.catchUpSubmittedWeekKeys ?? [];
+      const next = existing.filter((k) => k !== action.payload);
+      if (next.length === existing.length) return state;
+      return { ...state, ui: { ...state.ui, catchUpSubmittedWeekKeys: next } };
+    }
+    case "prune-catch-up-submitted-weeks": {
+      const existing = state.ui.catchUpSubmittedWeekKeys ?? [];
+      const next = existing.filter((k) => k >= action.payload.beforeWeekKey);
+      if (next.length === existing.length) return state;
+      return { ...state, ui: { ...state.ui, catchUpSubmittedWeekKeys: next } };
+    }
     case "add-task": {
       const now = nowIso();
       const newTask: Task = {

@@ -4,9 +4,8 @@ import { useEffect } from "react";
 import type { ID, MainView } from "@/lib/types";
 
 interface ShortcutHandlers {
-  openComposer: () => void;
-  openSessionComposer: () => void;
   openSearch: () => void;
+  openQuickFeedback: () => void;
   undoCalendarChange: () => void;
   undoTaskToggle: () => void;
   markFocusedDone: () => void;
@@ -29,6 +28,12 @@ const VIEW_KEYS: Record<string, MainView> = {
 export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "u") {
+        event.preventDefault();
+        handlers.openQuickFeedback();
+        return;
+      }
+
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (handlers.getActiveView() === "calendar") {
@@ -51,17 +56,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
         return;
       }
 
-      // Latin "n" and Hebrew "מ" (same key on Hebrew layouts) open new task / session.
-      if (event.key.toLowerCase() === "n" || event.key === "מ") {
-        event.preventDefault();
-        if (handlers.getActiveView() === "calendar") {
-          handlers.openSessionComposer();
-        } else {
-          handlers.openComposer();
-        }
-        return;
-      }
-
       if (event.key.toLowerCase() === "x") {
         event.preventDefault();
         handlers.markFocusedDone();
@@ -73,7 +67,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
         return;
       }
 
-      // Plain 1–9 / 0 only: ⌘/Ctrl+digit is reserved by the browser (e.g. Chrome tab switching).
       const maybeView = VIEW_KEYS[event.key];
       if (maybeView && !event.metaKey && !event.ctrlKey) {
         event.preventDefault();

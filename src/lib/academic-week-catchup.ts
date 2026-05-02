@@ -10,6 +10,9 @@ import {
 import { startOfDay } from "@/lib/date";
 import type { Course, CourseMeeting, WeekDay } from "@/lib/types";
 
+/** How far ahead to look for the next lecture/tutorial when setting a recording catch-up due date. */
+const RECORDING_CATCH_UP_DEADLINE_HORIZON_DAYS = 370;
+
 /** Sunday 00:00 through Thursday end-of-day in the same week as `anchorDate` (Sunday-based week). */
 export function getAcademicWeekSunThu(anchorDate: Date): { start: Date; end: Date } {
   const weekStart = startOfWeekGrid(anchorDate, "sunday");
@@ -51,10 +54,58 @@ export function sessionEndDateTime(occ: SessionOccurrence): Date {
   return d;
 }
 
+/** Combine session calendar date with meeting start clock time (local). */
+export function sessionStartDateTime(occ: SessionOccurrence): Date {
+  const d = startOfDay(occ.date);
+  const [h, m] = occ.meeting.start.split(":").map(Number);
+  d.setHours(h || 0, m || 0, 0, 0);
+  return d;
+}
+
+/**
+ * Due time for a "watch recording" catch-up task: start of the next lecture/tutorial for the same course
+ * after the missed session ends. Returns ISO string, or undefined if none found in the search horizon.
+ */
+export function findRecordingCatchUpDueAt(courses: Course[], missedOcc: SessionOccurrence): string | undefined {
+  const missedEnd = sessionEndDateTime(missedOcc);
+  const rangeStart = startOfDay(missedOcc.date);
+  const rangeEnd = addDays(rangeStart, RECORDING_CATCH_UP_DEADLINE_HORIZON_DAYS);
+  const candidates = expandMeetingOccurrences(courses, rangeStart, rangeEnd).filter(
+    (o) =>
+      o.course.id === missedOcc.course.id &&
+      isLectureOrTutorial(o.meeting) &&
+      !o.meeting.isAllDay &&
+      o.instanceKey !== missedOcc.instanceKey
+  );
+  let best: Date | undefined;
+  for (const o of candidates) {
+    const start = sessionStartDateTime(o);
+    if (start.getTime() <= missedEnd.getTime()) continue;
+    if (!best || start.getTime() < best.getTime()) best = start;
+  }
+  return best?.toISOString();
+}
+
 /**
  * Latest end time among lecture/tutorial sessions on Thursday of the same week as `occurrences`.
  * If none on Thursday, returns Thursday 23:59:59.999 for that week (from first occurrence's week or anchor).
  */
+/** Latest end time of any lecture/tutorial in the Sun–Thu academic week of `anchorDate` (for “week not finished yet” gating). */
+export function lastScheduledLectureTutorialEndInSunThuWeek(anchorDate: Date, courses: Course[]): Date {
+  const { start, end } = getAcademicWeekSunThu(anchorDate);
+  const occ = listCatchUpOccurrences(courses, start, end);
+  const weekSunday = startOfWeekGrid(anchorDate, "sunday");
+  if (occ.length === 0) {
+    return getLastThursdaySessionEndInWeek(occ, weekSunday);
+  }
+  let maxTs = 0;
+  for (const o of occ) {
+    const t = sessionEndDateTime(o).getTime();
+    if (t > maxTs) maxTs = t;
+  }
+  return new Date(maxTs);
+}
+
 export function getLastThursdaySessionEndInWeek(occurrences: SessionOccurrence[], weekSunday: Date): Date {
   const thursday = addDays(startOfWeekGrid(weekSunday, "sunday"), 4);
   const thuKey = formatDateKey(thursday);

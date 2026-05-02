@@ -164,6 +164,8 @@ export interface UIState {
   onboardingCompletedAt?: string;
   /** YYYY-MM-DD of week Sunday when the weekly catch-up modal was last auto-opened or completed (Sun–Thu academic week). */
   catchUpPromptedWeekKey?: string;
+  /** YYYY-MM-DD week-Sunday keys whose catch-up Generate has been submitted; used to lock the modal until the next week opens. */
+  catchUpSubmittedWeekKeys?: string[];
 }
 
 export interface SchoolState {
@@ -182,7 +184,7 @@ export interface Store {
 
 export interface SearchResult {
   id: string;
-  kind: "task" | "course" | "note" | "feature";
+  kind: "task" | "course" | "note" | "feature" | "command";
   title: string;
   subtitle: string;
   score: number;
