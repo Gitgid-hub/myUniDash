@@ -1867,9 +1867,12 @@ export function SchoolOS() {
   const openWeeklyCatchUpRef = useRef(openWeeklyCatchUpForAnchor);
   openWeeklyCatchUpRef.current = openWeeklyCatchUpForAnchor;
 
+  const weeklyCatchUpAutoPrompt = state.ui?.weeklyCatchUpAutoPrompt ?? true;
+
   useEffect(() => {
     if (!ready) return;
     const tick = () => {
+      if (!weeklyCatchUpAutoPrompt) return;
       const now = new Date();
       const weekKey = academicWeekKeyFromAnchor(now);
       if (state.ui?.catchUpPromptedWeekKey === weekKey) return;
@@ -1896,7 +1899,7 @@ export function SchoolOS() {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [ready, activeCourses, state.ui?.catchUpPromptedWeekKey, dispatch, weeklyCatchUpDemo]);
+  }, [ready, activeCourses, state.ui?.catchUpPromptedWeekKey, dispatch, weeklyCatchUpDemo, weeklyCatchUpAutoPrompt]);
 
   const submittedCatchUpWeeks = useMemo(
     () => new Set(state.ui?.catchUpSubmittedWeekKeys ?? []),
@@ -3977,6 +3980,8 @@ export function SchoolOS() {
         occurrences={weeklyCatchUpOccurrences}
         demoMode={weeklyCatchUpDemo}
         alreadySubmitted={weeklyCatchUpDemo ? false : isWeekKeySubmitted(weeklyCatchUpWeekKey)}
+        autoPromptEnabled={weeklyCatchUpAutoPrompt}
+        onAutoPromptChange={(next) => dispatch({ type: "set-weekly-catch-up-auto-prompt", payload: next })}
         onClose={() => {
           purgeWeeklyCatchUpDemoTasks();
           setWeeklyCatchUpOpen(false);
@@ -3988,6 +3993,8 @@ export function SchoolOS() {
         open={catchUpWeekNotReadyOpen}
         weekLabel={catchUpWeekNotReadyPayload?.weekLabel ?? ""}
         lastSessionEnd={catchUpWeekNotReadyPayload?.lastEnd ?? new Date()}
+        autoPromptEnabled={weeklyCatchUpAutoPrompt}
+        onAutoPromptChange={(next) => dispatch({ type: "set-weekly-catch-up-auto-prompt", payload: next })}
         onClose={() => {
           setCatchUpWeekNotReadyOpen(false);
           setCatchUpWeekNotReadyPayload(null);

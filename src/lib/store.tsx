@@ -67,6 +67,7 @@ type Action =
   | { type: "add-catch-up-submitted-week"; payload: string }
   | { type: "remove-catch-up-submitted-week"; payload: string }
   | { type: "prune-catch-up-submitted-weeks"; payload: { beforeWeekKey: string } }
+  | { type: "set-weekly-catch-up-auto-prompt"; payload: boolean }
   | { type: "add-task"; payload: TaskInput }
   | { type: "update-task"; payload: Partial<Task> & { id: ID } }
   | { type: "toggle-task-done"; payload: ID }
@@ -116,7 +117,8 @@ const fallback: SchoolState = {
     selectedCourseId: "all",
     theme: "system",
     showTaskComposer: false,
-    showSearch: false
+    showSearch: false,
+    weeklyCatchUpAutoPrompt: true
   }
 };
 
@@ -162,7 +164,8 @@ function normalizeState(state: SchoolState): SchoolState {
       catchUpPromptedWeekKey: state.ui?.catchUpPromptedWeekKey,
       catchUpSubmittedWeekKeys: Array.isArray(state.ui?.catchUpSubmittedWeekKeys)
         ? Array.from(new Set(state.ui!.catchUpSubmittedWeekKeys.filter((k): k is string => typeof k === "string")))
-        : []
+        : [],
+      weeklyCatchUpAutoPrompt: state.ui?.weeklyCatchUpAutoPrompt ?? true
     }
   };
 }
@@ -247,6 +250,8 @@ function reducer(state: SchoolState, action: Action): SchoolState {
       if (next.length === existing.length) return state;
       return { ...state, ui: { ...state.ui, catchUpSubmittedWeekKeys: next } };
     }
+    case "set-weekly-catch-up-auto-prompt":
+      return { ...state, ui: { ...state.ui, weeklyCatchUpAutoPrompt: action.payload } };
     case "add-task": {
       const now = nowIso();
       const newTask: Task = {

@@ -14,7 +14,8 @@ export function createSeedState(): SchoolState {
       selectedCourseId: "all",
       theme: "system",
       showTaskComposer: false,
-      showSearch: false
+      showSearch: false,
+      weeklyCatchUpAutoPrompt: true
     }
   };
 }

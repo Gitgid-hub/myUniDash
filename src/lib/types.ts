@@ -168,6 +168,11 @@ export interface UIState {
   catchUpPromptedWeekKey?: string;
   /** YYYY-MM-DD week-Sunday keys whose catch-up Generate has been submitted; used to lock the modal until the next week opens. */
   catchUpSubmittedWeekKeys?: string[];
+  /**
+   * When true (default), the app may auto-open weekly catch-up after the last Sun–Thu session ends.
+   * When false, only the calendar “Weekly catch-up” control opens the flow (no timed auto prompt).
+   */
+  weeklyCatchUpAutoPrompt?: boolean;
 }
 
 export interface SchoolState {

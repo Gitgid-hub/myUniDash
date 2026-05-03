@@ -1,16 +1,21 @@
 "use client";
 
 import { Button, Panel } from "@/components/ui";
+import { WeeklyCatchUpAutoPromptToggle } from "@/components/weekly-catch-up-auto-prompt-toggle";
 
 export function CatchUpWeekNotReadyModal({
   open,
   weekLabel,
   lastSessionEnd,
+  autoPromptEnabled,
+  onAutoPromptChange,
   onClose
 }: {
   open: boolean;
   weekLabel: string;
   lastSessionEnd: Date;
+  autoPromptEnabled: boolean;
+  onAutoPromptChange: (next: boolean) => void;
   onClose: () => void;
 }) {
   if (!open) return null;
@@ -28,6 +33,24 @@ export function CatchUpWeekNotReadyModal({
             last Sun–Thu lecture or Tirgul has finished. Your last session for that stretch ends around{" "}
             <span className="font-medium text-slate-800 dark:text-slate-200">{when}</span>. See you then!
           </p>
+          <div className="mt-4 flex items-center gap-3 rounded-xl border border-slate-200/90 bg-slate-50/80 px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.04]">
+            <WeeklyCatchUpAutoPromptToggle autoOn={autoPromptEnabled} onChange={onAutoPromptChange} />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-slate-800 dark:text-slate-100">Open automatically</p>
+              <p className="mt-0.5 text-xs leading-snug text-slate-500 dark:text-slate-400">
+                {autoPromptEnabled ? (
+                  <>
+                    After your last Sun–Thu lecture or Tirgul ends, School OS can bring up this weekly catch-up for you.
+                  </>
+                ) : (
+                  <>
+                    You open it when you want — use <span className="font-medium text-slate-600 dark:text-slate-300">Weekly catch-up</span> on the
+                    calendar. Nothing will open on its own.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
         </div>
         <div className="flex justify-end border-t border-slate-200/80 px-5 py-3 dark:border-white/10">
           <Button onClick={onClose}>OK</Button>

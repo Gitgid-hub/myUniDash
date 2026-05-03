@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Sparkles } from "lucide-react";
+import { WeeklyCatchUpAutoPromptToggle } from "@/components/weekly-catch-up-auto-prompt-toggle";
 import { Button, Panel } from "@/components/ui";
 import { groupOccurrencesByWeekday } from "@/lib/academic-week-catchup";
 import { formatDateKey, formatSessionType, type SessionOccurrence } from "@/lib/calendar-occurrences";
@@ -51,6 +52,9 @@ export type WeeklyCatchUpModalProps = {
   ) => WeeklyCatchUpGenerateResult;
   /** Switch to the Kanban view and trigger the soft glow on `newTaskIds`. */
   onGoToTasks: (newTaskIds: string[]) => void;
+  /** When set (and not demo), shows the auto-open vs manual preference under the header. */
+  autoPromptEnabled?: boolean;
+  onAutoPromptChange?: (next: boolean) => void;
 };
 
 export function WeeklyCatchUpModal({
@@ -61,7 +65,9 @@ export function WeeklyCatchUpModal({
   alreadySubmitted,
   onClose,
   onGenerate,
-  onGoToTasks
+  onGoToTasks,
+  autoPromptEnabled = true,
+  onAutoPromptChange
 }: WeeklyCatchUpModalProps) {
   const [attended, setAttended] = useState<Set<string>>(() => new Set());
   const [editMode, setEditMode] = useState(false);
@@ -133,6 +139,26 @@ export function WeeklyCatchUpModal({
                 ? `You already generated catch-up tasks for ${weekLabel}. The list below is read-only — use Edit if you need to add more recording tasks.`
                 : `Lectures & Tirgul (Sun–Thu) — ${weekLabel}. Check sessions you attended; Generate adds backlog tasks to watch recordings for the rest. Each task's due date is set to the start of your next lecture or Tirgul in that course (from your calendar).`}
           </p>
+          {onAutoPromptChange && !demoMode && !showResult ? (
+            <div className="mt-3 flex items-center gap-3 rounded-xl border border-slate-200/90 bg-slate-50/80 px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.04]">
+              <WeeklyCatchUpAutoPromptToggle autoOn={autoPromptEnabled} onChange={onAutoPromptChange} />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-slate-800 dark:text-slate-100">Open automatically</p>
+                <p className="mt-0.5 text-xs leading-snug text-slate-500 dark:text-slate-400">
+                  {autoPromptEnabled ? (
+                    <>
+                      After your last Sun–Thu lecture or Tirgul ends, School OS can bring up this weekly catch-up for you.
+                    </>
+                  ) : (
+                    <>
+                      You open it when you want — use <span className="font-medium text-slate-600 dark:text-slate-300">Weekly catch-up</span> on the
+                      calendar. Nothing will open on its own.
+                    </>
+                  )}
+                </p>
+              </div>
+            </div>
+          ) : null}
           {demoMode && !showResult ? (
             <p className="mt-3 rounded-lg border border-sky-500/25 bg-sky-500/10 px-3 py-2 text-xs leading-snug text-sky-900 dark:text-sky-100/95">
               <span className="font-semibold">QA demo.</span> Any previous demo catch-up tasks were cleared when you opened this. Sessions are for a{" "}
