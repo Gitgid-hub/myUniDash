@@ -12,6 +12,8 @@ interface ShortcutHandlers {
   switchView: (view: MainView) => void;
   setFocusedTask: (id?: ID) => void;
   getActiveView: () => MainView;
+  /** N / מ on the Kanban board: open new task (skipped when typing in a field). */
+  openNewTask?: () => void;
 }
 
 const VIEW_KEYS: Record<string, MainView> = {
@@ -45,8 +47,23 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
       }
 
       const target = event.target as HTMLElement | null;
-      const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      const typing =
+        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
       if (typing && !(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+
+      if (
+        handlers.openNewTask &&
+        !event.repeat &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        (event.key.toLowerCase() === "n" || event.key === "מ") &&
+        handlers.getActiveView() === "kanban"
+      ) {
+        event.preventDefault();
+        handlers.openNewTask();
         return;
       }
 

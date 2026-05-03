@@ -16,6 +16,7 @@ import type { ComponentType, CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
+  ArchiveRestore,
   BarChart3,
   BookOpen,
   CalendarDays,
@@ -109,6 +110,7 @@ import {
   startOfWeekGrid,
   type SessionOccurrence
 } from "@/lib/calendar-occurrences";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CatchUpWeekNotReadyModal } from "@/components/catch-up-week-not-ready-modal";
 import { WeeklyCatchUpModal } from "@/components/weekly-catch-up-modal";
 import { getDemoWeeklyCatchupVirtualNow } from "@/lib/demo-weekly-catchup";
@@ -635,6 +637,14 @@ export function SchoolOS() {
   const [isCourseActionsOpen, setIsCourseActionsOpen] = useState(false);
   const [courseListMode, setCourseListMode] = useState<"all" | "imported" | "manual" | "archived">("all");
   const [isCourseEditorOpen, setIsCourseEditorOpen] = useState(false);
+  const [appConfirm, setAppConfirm] = useState<{
+    title: string;
+    description: string;
+    variant?: "default" | "danger";
+    confirmLabel?: string;
+    cancelLabel?: string;
+    onConfirm: () => void;
+  } | null>(null);
   const [isSessionEditorOpen, setIsSessionEditorOpen] = useState(false);
   const [endedWorkBlockId, setEndedWorkBlockId] = useState<string | null>(null);
   const promptedWorkBlocksRef = useRef<Set<string>>(new Set());
@@ -854,7 +864,12 @@ export function SchoolOS() {
     },
     switchView: (view) => dispatch({ type: "set-view", payload: view }),
     setFocusedTask: (id) => dispatch({ type: "set-focus", payload: id }),
-    getActiveView: () => state.ui.activeView
+    getActiveView: () => state.ui.activeView,
+    openNewTask: () => {
+      if (state.ui.showTaskComposer || state.ui.showSearch) return;
+      setComposerInitialCourseId(undefined);
+      dispatch({ type: "set-composer", payload: true });
+    }
   });
 
   useEffect(() => {
@@ -1118,39 +1133,48 @@ export function SchoolOS() {
     [getAuthHeader, isAdmin, loadEarlyAccessRequests]
   );
 
-  const deleteAdminFeatureRequest = useCallback(async (requestId: number) => {
+  const deleteAdminFeatureRequest = useCallback((requestId: number) => {
     if (!isAdmin) return;
-    const confirmed = window.confirm("Delete this user request permanently?");
-    if (!confirmed) return;
-    setDeletingRequestId(requestId);
-    setAdminRequestsError(null);
-    try {
-      const headers = {
-        "Content-Type": "application/json",
-        ...(await getAuthHeader())
-      };
-      const res = await fetch("/api/feature-requests", {
-        method: "DELETE",
-        headers,
-        body: JSON.stringify({ id: requestId })
-      });
-      const payload = await res.json();
-      if (!res.ok) {
-        throw new Error(payload.error ?? "Failed to delete request.");
+    setAppConfirm({
+      title: "Delete this request?",
+      description: "This permanently removes the user's feature request from the admin list.",
+      variant: "danger",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      onConfirm: () => {
+        void (async () => {
+          setDeletingRequestId(requestId);
+          setAdminRequestsError(null);
+          try {
+            const headers = {
+              "Content-Type": "application/json",
+              ...(await getAuthHeader())
+            };
+            const res = await fetch("/api/feature-requests", {
+              method: "DELETE",
+              headers,
+              body: JSON.stringify({ id: requestId })
+            });
+            const payload = await res.json();
+            if (!res.ok) {
+              throw new Error(payload.error ?? "Failed to delete request.");
+            }
+            setAdminFeatureRequests((prev) => prev.filter((item) => item.id !== requestId));
+            setDoneFeatureRequestMap((prev) => {
+              const key = String(requestId);
+              if (!prev[key]) return prev;
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
+          } catch (error) {
+            setAdminRequestsError(error instanceof Error ? error.message : "Failed to delete request.");
+          } finally {
+            setDeletingRequestId(null);
+          }
+        })();
       }
-      setAdminFeatureRequests((prev) => prev.filter((item) => item.id !== requestId));
-      setDoneFeatureRequestMap((prev) => {
-        const key = String(requestId);
-        if (!prev[key]) return prev;
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-    } catch (error) {
-      setAdminRequestsError(error instanceof Error ? error.message : "Failed to delete request.");
-    } finally {
-      setDeletingRequestId(null);
-    }
+    });
   }, [getAuthHeader, isAdmin]);
 
   const submitFeatureRequest = useCallback(async () => {
@@ -2972,27 +2996,58 @@ export function SchoolOS() {
                         </div>
                       </button>
                       <div className={`flex items-center gap-1 transition ${isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
-                        <button
-                          type="button"
-                          aria-label="Archive course"
-                          onClick={() => {
-                            dispatch({ type: "archive-course", payload: course.id });
-                            dispatch({ type: "set-course-filter", payload: "all" });
-                          }}
-                          className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-white/10"
-                        >
-                          <Archive className="h-3.5 w-3.5" />
-                        </button>
+                        {courseListMode === "archived" ? (
+                          <button
+                            type="button"
+                            aria-label="Restore course to active"
+                            title="Back to active courses — calendar sessions stay as they were"
+                            onClick={() => {
+                              dispatch({ type: "unarchive-course", payload: course.id });
+                              setCourseListMode("all");
+                              dispatch({ type: "set-course-filter", payload: course.id });
+                            }}
+                            className="rounded-md p-1.5 text-emerald-600 transition hover:bg-emerald-100/70 dark:text-emerald-400 dark:hover:bg-emerald-500/15"
+                          >
+                            <ArchiveRestore className="h-3.5 w-3.5" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            aria-label="Archive course"
+                            onClick={() => {
+                              setAppConfirm({
+                                title: "Archive this course?",
+                                description:
+                                  "It will be hidden from the calendar and active lists until you restore it. Sessions and other data stay saved.",
+                                confirmLabel: "Archive",
+                                cancelLabel: "Cancel",
+                                onConfirm: () => {
+                                  dispatch({ type: "archive-course", payload: course.id });
+                                  dispatch({ type: "set-course-filter", payload: "all" });
+                                }
+                              });
+                            }}
+                            className="rounded-md p-1.5 text-slate-500 transition hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-white/10"
+                          >
+                            <Archive className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           aria-label="Delete course"
                           onClick={() => {
-                            const confirmed = window.confirm(
-                              "Delete this course permanently? This will also delete related tasks, work blocks, and class notes."
-                            );
-                            if (!confirmed) return;
-                            dispatch({ type: "delete-course", payload: course.id });
-                            dispatch({ type: "set-course-filter", payload: "all" });
+                            setAppConfirm({
+                              title: "Delete this course?",
+                              description:
+                                "This permanently removes the course and deletes related tasks, work blocks, and class notes.",
+                              variant: "danger",
+                              confirmLabel: "Delete",
+                              cancelLabel: "Cancel",
+                              onConfirm: () => {
+                                dispatch({ type: "delete-course", payload: course.id });
+                                dispatch({ type: "set-course-filter", payload: "all" });
+                              }
+                            });
                           }}
                           className="rounded-md p-1.5 text-rose-500 transition hover:bg-rose-100/70 dark:text-rose-400 dark:hover:bg-rose-500/10"
                         >
@@ -3158,10 +3213,12 @@ export function SchoolOS() {
               <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
                 <li>
                   <span className="font-medium text-slate-600 dark:text-slate-300">N</span> or Hebrew{" "}
-                  <span className="font-medium text-slate-600 dark:text-slate-300">מ</span> — new class note for the{" "}
-                  <strong>selected calendar session</strong> only (Calendar with a session highlighted, or Class Notes with that session
-                  still selected). Does not open the session editor or task composer; add sessions on the calendar by dragging or clicking
-                  existing events.
+                  <span className="font-medium text-slate-600 dark:text-slate-300">מ</span> on the{" "}
+                  <strong>Kanban</strong> board — open <strong>New Assignment</strong> (not while typing in a field or with search open).
+                </li>
+                <li>
+                  Same keys on <strong>Calendar</strong> or <strong>Class Notes</strong> with a <strong>selected calendar session</strong>{" "}
+                  — new class note for that session (not the task composer).
                 </li>
                 <li>
                   <span className="font-medium text-slate-600 dark:text-slate-300">⌘⇧U</span> /{" "}
@@ -3884,19 +3941,41 @@ export function SchoolOS() {
             });
             setIsCourseEditorOpen(false);
           }}
+          courseArchived={selectedCourse.archived}
           onArchive={() => {
-            dispatch({ type: "archive-course", payload: selectedCourse.id });
-            dispatch({ type: "set-course-filter", payload: "all" });
+            setAppConfirm({
+              title: "Archive this course?",
+              description:
+                "It will be hidden from the calendar and active lists until you restore it. Sessions and other data stay saved.",
+              confirmLabel: "Archive",
+              cancelLabel: "Cancel",
+              onConfirm: () => {
+                dispatch({ type: "archive-course", payload: selectedCourse.id });
+                dispatch({ type: "set-course-filter", payload: "all" });
+                setIsCourseEditorOpen(false);
+              }
+            });
+          }}
+          onRestore={() => {
+            dispatch({ type: "unarchive-course", payload: selectedCourse.id });
+            setCourseListMode("all");
+            dispatch({ type: "set-course-filter", payload: selectedCourse.id });
             setIsCourseEditorOpen(false);
           }}
           onDelete={() => {
-            const confirmed = window.confirm(
-              "Delete this course permanently? This will also delete related tasks, work blocks, and class notes."
-            );
-            if (!confirmed) return;
-            dispatch({ type: "delete-course", payload: selectedCourse.id });
-            dispatch({ type: "set-course-filter", payload: "all" });
-            setIsCourseEditorOpen(false);
+            setAppConfirm({
+              title: "Delete this course?",
+              description:
+                "This permanently removes the course and deletes related tasks, work blocks, and class notes.",
+              variant: "danger",
+              confirmLabel: "Delete",
+              cancelLabel: "Cancel",
+              onConfirm: () => {
+                dispatch({ type: "delete-course", payload: selectedCourse.id });
+                dispatch({ type: "set-course-filter", payload: "all" });
+                setIsCourseEditorOpen(false);
+              }
+            });
           }}
         />
       )}
@@ -4069,6 +4148,21 @@ export function SchoolOS() {
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={appConfirm !== null}
+        title={appConfirm?.title ?? ""}
+        description={appConfirm?.description ?? ""}
+        variant={appConfirm?.variant ?? "default"}
+        confirmLabel={appConfirm?.confirmLabel}
+        cancelLabel={appConfirm?.cancelLabel}
+        onCancel={() => setAppConfirm(null)}
+        onConfirm={() => {
+          const pending = appConfirm;
+          setAppConfirm(null);
+          pending?.onConfirm();
+        }}
+      />
     </div>
   );
 }
@@ -7941,7 +8035,9 @@ function CourseEditorModal({
   setEditColor,
   onClose,
   onSave,
+  courseArchived,
   onArchive,
+  onRestore,
   onDelete
 }: {
   editName: string;
@@ -7960,7 +8056,9 @@ function CourseEditorModal({
   setEditColor: (value: string) => void;
   onClose: () => void;
   onSave: () => void;
+  courseArchived: boolean;
   onArchive: () => void;
+  onRestore: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -7969,7 +8067,11 @@ function CourseEditorModal({
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h3 className="text-xl font-semibold tracking-tight">Edit course</h3>
-            <p className="text-sm text-slate-500 dark:text-slate-400">Update the course details and display style.</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {courseArchived
+                ? "This course is archived — hidden from the calendar and active lists. Restore to bring it back with all sessions unchanged."
+                : "Update the course details and display style."}
+            </p>
           </div>
           <Button variant="ghost" onClick={onClose} className="h-10 w-10 p-0">
             <X className="h-4 w-4" />
@@ -8008,8 +8110,18 @@ function CourseEditorModal({
         </div>
         <div className="mt-4 flex justify-between">
           <div className="flex gap-2">
-            <Button variant="outline" className="text-rose-500" onClick={onArchive}>Archive</Button>
-            <Button variant="outline" className="text-rose-600" onClick={onDelete}>Delete</Button>
+            {courseArchived ? (
+              <Button variant="outline" className="text-emerald-600 dark:text-emerald-400" onClick={onRestore}>
+                Restore to active
+              </Button>
+            ) : (
+              <Button variant="outline" className="text-slate-600 dark:text-slate-300" onClick={onArchive}>
+                Archive
+              </Button>
+            )}
+            <Button variant="outline" className="text-rose-600" onClick={onDelete}>
+              Delete
+            </Button>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={onClose}>Close</Button>

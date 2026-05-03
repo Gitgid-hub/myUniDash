@@ -75,6 +75,7 @@ type Action =
   | { type: "add-course"; payload: CourseInput }
   | { type: "update-course"; payload: Partial<Course> & { id: ID } }
   | { type: "archive-course"; payload: ID }
+  | { type: "unarchive-course"; payload: ID }
   | { type: "delete-course"; payload: ID }
   | { type: "add-work-block"; payload: Omit<WorkBlock, "id" | "createdAt"> & { id?: ID } }
   | { type: "update-work-block"; payload: Partial<WorkBlock> & { id: ID } }
@@ -337,6 +338,13 @@ function reducer(state: SchoolState, action: Action): SchoolState {
         ...state,
         courses: state.courses.map((course) =>
           course.id === action.payload ? { ...course, archived: true, updatedAt: nowIso() } : course
+        )
+      };
+    case "unarchive-course":
+      return {
+        ...state,
+        courses: state.courses.map((course) =>
+          course.id === action.payload ? { ...course, archived: false, updatedAt: nowIso() } : course
         )
       };
     case "delete-course": {
