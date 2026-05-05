@@ -145,6 +145,8 @@ const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
 const USER_REQUESTS_SEEN_WATERMARK_KEY = "school-os:user-requests-seen-watermark:v1";
 const KANBAN_BOARD_LAYOUT_STORAGE_KEY = "school-os:kanban-board-layout:v1";
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
+const RELEASE_ANNOUNCEMENT_SEEN_KEY = "school-os:release-announcement-seen:v1";
+const RELEASE_ANNOUNCEMENT_VERSION = "2026-05-05-class-notes-images-v2";
 const UNRELATED_SESSIONS_COURSE_ID = "course-unrelated-sessions";
 type CatalogDegreeOption = {
   id: string;
@@ -628,6 +630,8 @@ export function SchoolOS() {
   const [editColor, setEditColor] = useState(coursePalette[0]);
   const [isUtilityOpen, setIsUtilityOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [releaseAnnouncementOpen, setReleaseAnnouncementOpen] = useState(false);
+  const releaseAnnouncementTitleRef = useRef<HTMLHeadingElement | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [featureRequestMessage, setFeatureRequestMessage] = useState("");
   const [featureRequestShots, setFeatureRequestShots] = useState<Array<{ name: string; mimeType: string; dataUrl: string }>>([]);
@@ -1323,6 +1327,47 @@ export function SchoolOS() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(FEATURE_REQUEST_DONE_STORAGE_KEY, JSON.stringify(doneFeatureRequestMap));
   }, [doneFeatureRequestMap]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const seenVersion = window.localStorage.getItem(RELEASE_ANNOUNCEMENT_SEEN_KEY);
+    if (seenVersion === RELEASE_ANNOUNCEMENT_VERSION) return;
+    setReleaseAnnouncementOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!releaseAnnouncementOpen) return;
+    const titleEl = releaseAnnouncementTitleRef.current;
+    if (!titleEl) return;
+    const style = window.getComputedStyle(titleEl);
+    const parent = titleEl.parentElement;
+    const parentStyle = parent ? window.getComputedStyle(parent) : null;
+    // #region agent log
+    fetch("http://127.0.0.1:7905/ingest/50ad504e-2222-4899-bcc0-f4e8306257b9", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6953ba" },
+      body: JSON.stringify({
+        sessionId: "6953ba",
+        runId: "popup-rtl-1",
+        hypothesisId: "H1",
+        location: "school-os.tsx:releaseAnnouncementTitleEffect",
+        message: "Popup title computed bidi styles",
+        data: {
+          titleDirAttr: titleEl.getAttribute("dir"),
+          titleText: titleEl.innerText,
+          titleHtml: titleEl.innerHTML,
+          titleDirection: style.direction,
+          titleTextAlign: style.textAlign,
+          titleUnicodeBidi: style.unicodeBidi,
+          parentDirAttr: parent?.getAttribute("dir") ?? null,
+          parentDirection: parentStyle?.direction ?? null,
+          parentTextAlign: parentStyle?.textAlign ?? null
+        },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion
+  }, [releaseAnnouncementOpen]);
 
   useEffect(() => {
     if (!isAdmin || typeof window === "undefined") return;
@@ -2835,7 +2880,7 @@ export function SchoolOS() {
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f7f8fa_0%,#f4f5f7_100%)] text-slate-900 dark:bg-[linear-gradient(180deg,#090b0d_0%,#0d1014_100%)] dark:text-slate-100">
-      <div className="mx-auto grid h-[100dvh] max-w-[1560px] grid-cols-1 gap-5 overflow-hidden p-5 lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-1">
+      <div className="mx-auto grid min-h-[100dvh] max-w-[1560px] grid-cols-1 gap-5 p-5 lg:h-[100dvh] lg:overflow-hidden lg:grid-cols-[240px_minmax(0,1fr)] lg:grid-rows-1">
         <aside className="animate-fadeSlide space-y-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:pr-0.5">
           <Panel className="bg-white/88 dark:bg-[#101317]/90">
             <div className="flex items-start justify-between gap-2">
@@ -4230,6 +4275,48 @@ export function SchoolOS() {
           }}
           onSave={handleCreateTask}
         />
+      )}
+      {releaseAnnouncementOpen && (
+        <div className="fixed inset-0 z-[56] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
+          <Panel className="w-full max-w-xl rounded-[28px] bg-white/95 p-6 dark:bg-[#101317]/95">
+            <div className="flex items-start justify-end">
+              <div dir="rtl" className="w-full text-right">
+                <h3 ref={releaseAnnouncementTitleRef} className="text-lg font-semibold tracking-tight">
+                  <bdi dir="rtl">אח יקר, יש עדכון!</bdi>
+                  <span className="mx-1" aria-hidden />
+                  <bdi dir="ltr" aria-hidden>
+                    🔥
+                  </bdi>
+                </h3>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  שיפרתי את מערכת סיכומי השיעור בכמה נקודות חשובות:
+                </p>
+              </div>
+            </div>
+            <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-slate-700 dark:text-slate-200" dir="rtl">
+              <li>
+                מעכשיו אפשר להוסיף צילומי מסך (למשל סליידים מתוך מצגת) ישירות לתוך הסיכום, כולל שינוי גודל פרופורציונלי
+                מהפינות.
+              </li>
+              <li>
+                בעמוד סיכומי השיעורים, הקורס שבו יצרת או עדכנת סיכום לאחרונה יופיע ראשון ברשימה.
+              </li>
+              <li>אם יצאת וחזרת לפני שסיימת לעבוד, יהיה לך קל יותר להמשיך בדיוק מאיפה שעצרת.</li>
+            </ul>
+            <div className="mt-5 flex justify-end">
+              <Button
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem(RELEASE_ANNOUNCEMENT_SEEN_KEY, RELEASE_ANNOUNCEMENT_VERSION);
+                  }
+                  setReleaseAnnouncementOpen(false);
+                }}
+              >
+                הבנתי, תודה
+              </Button>
+            </div>
+          </Panel>
+        </div>
       )}
       <WeeklyCatchUpModal
         open={weeklyCatchUpOpen}

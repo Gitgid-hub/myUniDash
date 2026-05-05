@@ -14,6 +14,19 @@ function sanitizeNoteStyleAttr(raw: string): string | null {
     }
     if (/^text-align:\s*(left|right|center|justify)\s*$/i.test(p)) {
       out.push(p);
+      continue;
+    }
+    // Keep screenshot sizing from class-note image nodes.
+    if (/^width:\s*[\d.]+\s*%\s*$/i.test(p)) {
+      out.push(p);
+      continue;
+    }
+    if (/^max-width:\s*100%\s*$/i.test(p)) {
+      out.push(p);
+      continue;
+    }
+    if (/^height:\s*auto\s*$/i.test(p)) {
+      out.push(p);
     }
   }
   return out.length ? out.join("; ") : null;
@@ -58,7 +71,20 @@ export function sanitizeClassNoteBodyHtml(html: string): string {
       "span",
       "img"
     ],
-    ALLOWED_ATTR: ["href", "target", "rel", "dir", "style", "class", "data-classnote-img", "alt", "loading", "decoding"]
+    ALLOWED_ATTR: [
+      "href",
+      "target",
+      "rel",
+      "dir",
+      "style",
+      "class",
+      "data-classnote-img",
+      "data-classnote-width",
+      "data-classnote-noteid",
+      "alt",
+      "loading",
+      "decoding"
+    ]
   });
 }
 

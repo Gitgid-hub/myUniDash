@@ -5,6 +5,8 @@ import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import { TextAlign } from "@tiptap/extension-text-align";
 import Underline from "@tiptap/extension-underline";
+import { NodeSelection } from "@tiptap/pm/state";
+import { DOMSerializer } from "@tiptap/pm/model";
 import { ClassNoteTextStyle } from "@/lib/tiptap-class-note-text-style";
 import type { Editor } from "@tiptap/core";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
@@ -38,7 +40,12 @@ import type { ChangeEvent, ReactNode } from "react";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import type { ClassNoteEditorTextDir } from "@/lib/types";
 import { initialEditorHtml } from "@/lib/class-note-body";
-import { CLASS_NOTE_IMAGE_ACCEPT, CLASS_NOTE_IMAGE_MAX_BYTES, isClassNoteImageFile } from "@/lib/class-note-attachment-blobs";
+import {
+  CLASS_NOTE_IMAGE_ACCEPT,
+  CLASS_NOTE_IMAGE_MAX_BYTES,
+  getClassNoteAttachmentBlob,
+  isClassNoteImageFile
+} from "@/lib/class-note-attachment-blobs";
 import { ClassNoteImage } from "@/lib/tiptap-class-note-image";
 
 export type ClassNoteRichEditorHandle = {
@@ -46,6 +53,8 @@ export type ClassNoteRichEditorHandle = {
   insertAiSummaryHtml: (html: string) => void;
   /** Inserts an embedded screenshot node (attachment must already exist in IndexedDB + note.attachments). */
   insertClassNoteImage: (attachmentId: string, alt?: string) => void;
+  focusEditor: () => void;
+  selectAll: () => void;
 };
 
 type ClassNoteRichEditorProps = {
@@ -146,6 +155,15 @@ function FontSizeSelect({ editor }: { editor: Editor }) {
   );
 }
 
+function selectedClassNoteImageWidth(editor: Editor): number | null {
+  const sel = editor.state.selection;
+  const node = sel instanceof NodeSelection ? sel.node : null;
+  if (!node || node.type.name !== "classNoteImage") return null;
+  const raw = Number(node.attrs.widthPercent);
+  if (!Number.isFinite(raw)) return 100;
+  return Math.max(35, Math.min(100, Math.round(raw)));
+}
+
 export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNoteRichEditorProps>(
   function ClassNoteRichEditor({ noteId, onRegisterEmbeddedImage, body, onBodyChange, placeholder, textDir, onTextDirChange }, ref) {
     const registerImageRef = useRef(onRegisterEmbeddedImage);
@@ -168,6 +186,57 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
       [placeholder]
     );
 
+    const migrateEmbeddedImagesFromOtherNotes = useCallback(
+      async (ed: Editor) => {
+        const migrations: Array<{
+          pos: number;
+          attachmentId: string;
+          sourceNoteId: string;
+          alt: string;
+          widthPercent?: number;
+        }> = [];
+        ed.state.doc.descendants((node, pos) => {
+          if (node.type.name !== "classNoteImage") return true;
+          const attachmentId = String(node.attrs.attachmentId ?? "");
+          const sourceNoteId = String(node.attrs.sourceNoteId ?? "");
+          if (!attachmentId || !sourceNoteId || sourceNoteId === noteId) return true;
+          migrations.push({
+            pos,
+            attachmentId,
+            sourceNoteId,
+            alt: String(node.attrs.alt ?? ""),
+            widthPercent: Number(node.attrs.widthPercent ?? 100)
+          });
+          return true;
+        });
+        if (migrations.length === 0) return;
+
+        for (const item of migrations) {
+          const blob = await getClassNoteAttachmentBlob(item.sourceNoteId, item.attachmentId);
+          if (!blob?.size) continue;
+          const fallbackExt = blob.type.includes("png") ? "png" : blob.type.includes("webp") ? "webp" : "jpg";
+          const fallbackName = item.alt?.trim() ? `${item.alt.trim()}.${fallbackExt}` : `Screenshot.${fallbackExt}`;
+          const file = new File([blob], fallbackName, { type: blob.type || "image/png" });
+          const newAttachmentId = await registerImageRef.current?.(file);
+          if (!newAttachmentId) continue;
+
+          const currentNode = ed.state.doc.nodeAt(item.pos);
+          if (!currentNode || currentNode.type.name !== "classNoteImage") continue;
+          const tr = ed.state.tr.setNodeMarkup(item.pos, undefined, {
+            ...currentNode.attrs,
+            attachmentId: newAttachmentId,
+            sourceNoteId: noteId,
+            widthPercent:
+              Number.isFinite(item.widthPercent) && item.widthPercent !== undefined
+                ? Math.max(35, Math.min(100, Math.round(item.widthPercent)))
+                : 100
+          });
+          ed.view.dispatch(tr);
+        }
+      },
+      [noteId]
+    );
+
     const editor = useEditor({
       immediatelyRender: false,
       extensions,
@@ -178,10 +247,73 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
             "prose-note-editor max-w-none px-3 py-2 text-sm leading-relaxed text-slate-800 focus:outline-none dark:text-slate-100",
           dir: textDir,
           spellCheck: "true"
+        },
+        handleDOMEvents: {
+          keydown(view, event) {
+            const e = event as KeyboardEvent;
+            const isMod = e.metaKey || e.ctrlKey;
+            const key = e.key.toLowerCase();
+            if (isMod && key === "x" && !view.state.selection.empty) {
+              e.preventDefault();
+              const sel = view.state.selection;
+              const slice = view.state.doc.slice(sel.from, sel.to);
+              const serializer = DOMSerializer.fromSchema(view.state.schema);
+              const wrap = document.createElement("div");
+              wrap.appendChild(serializer.serializeFragment(slice.content));
+              const html = wrap.innerHTML;
+              const text = wrap.textContent ?? "";
+              void (async () => {
+                let copied = false;
+                try {
+                  const ClipboardItemCtor = (window as Window & { ClipboardItem?: typeof ClipboardItem }).ClipboardItem;
+                  if (navigator.clipboard?.write && ClipboardItemCtor) {
+                    await navigator.clipboard.write([
+                      new ClipboardItemCtor({
+                        "text/html": new Blob([html], { type: "text/html" }),
+                        "text/plain": new Blob([text], { type: "text/plain" })
+                      })
+                    ]);
+                    copied = true;
+                  } else if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(text);
+                    copied = true;
+                  }
+                } catch {
+                  copied = false;
+                }
+                if (!copied) return;
+                view.dispatch(view.state.tr.deleteSelection());
+              })();
+              return true;
+            }
+            return false;
+          },
+          cut(view, event) {
+            const e = event as ClipboardEvent;
+            const sel = view.state.selection;
+            if (sel.empty || !e.clipboardData) return false;
+            const slice = view.state.doc.slice(sel.from, sel.to);
+            const serializer = DOMSerializer.fromSchema(view.state.schema);
+            const wrap = document.createElement("div");
+            wrap.appendChild(serializer.serializeFragment(slice.content));
+            e.preventDefault();
+            e.clipboardData.setData("text/html", wrap.innerHTML);
+            e.clipboardData.setData("text/plain", wrap.textContent ?? "");
+            view.dispatch(view.state.tr.deleteSelection());
+            return true;
+          }
         }
       },
       onUpdate: ({ editor: ed }) => {
         onBodyChange(ed.getHTML());
+      }
+    });
+
+    const activeImageWidth = useEditorState({
+      editor,
+      selector: ({ editor: ed }) => {
+        if (!ed) return null;
+        return selectedClassNoteImageWidth(ed);
       }
     });
 
@@ -207,12 +339,18 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
             .focus()
             .insertContent({
               type: "classNoteImage",
-              attrs: { attachmentId, alt: alt?.trim() || "Screenshot" }
+              attrs: { attachmentId, alt: alt?.trim() || "Screenshot", sourceNoteId: noteId, widthPercent: 100 }
             })
             .run();
+        },
+        focusEditor() {
+          editor?.commands.focus();
+        },
+        selectAll() {
+          editor?.commands.selectAll();
         }
       }),
-      [editor]
+      [editor, noteId]
     );
 
     useEffect(() => {
@@ -238,6 +376,15 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
           handlePaste(view, event) {
             const cd = event.clipboardData;
             if (!cd) return false;
+            const html = cd.getData("text/html");
+            if (html && html.includes("data-classnote-img")) {
+              event.preventDefault();
+              void (async () => {
+                editor?.chain().focus().insertContent(html).run();
+                if (editor) await migrateEmbeddedImagesFromOtherNotes(editor);
+              })();
+              return true;
+            }
             const fileItem = [...cd.items].find((i) => i.kind === "file" && (i.type || "").startsWith("image/"));
             const file = fileItem?.getAsFile();
             if (!file || !isClassNoteImageFile(file)) return false;
@@ -248,7 +395,7 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
               if (!id) return;
               const type = view.state.schema.nodes.classNoteImage;
               if (!type) return;
-              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot" });
+              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot", sourceNoteId: noteId, widthPercent: 100 });
               const pos = view.state.selection.from;
               view.dispatch(view.state.tr.insert(pos, node));
             })();
@@ -266,7 +413,7 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
               if (!id) return;
               const type = view.state.schema.nodes.classNoteImage;
               if (!type) return;
-              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot" });
+              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot", sourceNoteId: noteId, widthPercent: 100 });
               const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
               const pos = coords ? coords.pos : view.state.selection.from;
               view.dispatch(view.state.tr.insert(pos, node));
@@ -275,7 +422,7 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
           }
         }
       });
-    }, [editor, textDir]);
+    }, [editor, migrateEmbeddedImagesFromOtherNotes, noteId, textDir]);
 
     const cycleDir = useCallback(() => {
       const i = DIR_ORDER.indexOf(textDir);
@@ -306,9 +453,18 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
           .focus()
           .insertContent({
             type: "classNoteImage",
-            attrs: { attachmentId: id, alt: file.name || "Screenshot" }
+            attrs: { attachmentId: id, alt: file.name || "Screenshot", sourceNoteId: noteId, widthPercent: 100 }
           })
           .run();
+      },
+      [editor, noteId]
+    );
+
+    const setSelectedImageWidth = useCallback(
+      (widthPercent: number) => {
+        if (!editor) return;
+        const width = Math.max(35, Math.min(100, Math.round(widthPercent)));
+        editor.chain().focus().updateAttributes("classNoteImage", { widthPercent: width }).run();
       },
       [editor]
     );
@@ -419,6 +575,33 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
           >
             <ImagePlus className="h-4 w-4" />
           </ToolbarBtn>
+          <span className="mx-1 h-6 w-px shrink-0 bg-slate-200 dark:bg-white/15" />
+          <div className="inline-flex items-center gap-1">
+            <ToolbarBtn
+              title={activeImageWidth === null ? "Select an image to resize" : "Set image size: small"}
+              onAction={() => setSelectedImageWidth(50)}
+              active={activeImageWidth === 50}
+              disabled={activeImageWidth === null}
+            >
+              <span className="text-[10px] font-semibold">S</span>
+            </ToolbarBtn>
+            <ToolbarBtn
+              title={activeImageWidth === null ? "Select an image to resize" : "Set image size: medium"}
+              onAction={() => setSelectedImageWidth(75)}
+              active={activeImageWidth === 75}
+              disabled={activeImageWidth === null}
+            >
+              <span className="text-[10px] font-semibold">M</span>
+            </ToolbarBtn>
+            <ToolbarBtn
+              title={activeImageWidth === null ? "Select an image to resize" : "Set image size: full width"}
+              onAction={() => setSelectedImageWidth(100)}
+              active={activeImageWidth === 100}
+              disabled={activeImageWidth === null}
+            >
+              <span className="text-[10px] font-semibold">L</span>
+            </ToolbarBtn>
+          </div>
           <ToolbarBtn title="Clear character styles" onAction={() => editor.chain().focus().unsetAllMarks().run()}>
             <RemoveFormatting className="h-4 w-4" />
           </ToolbarBtn>

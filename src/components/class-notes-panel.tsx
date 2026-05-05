@@ -66,6 +66,14 @@ function formatFileBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function noteActivityMs(note: ClassNote): number {
+  const updated = new Date(note.updatedAt).getTime();
+  const created = new Date(note.createdAt).getTime();
+  const occurred = new Date(`${note.occurredOn}T12:00:00`).getTime();
+  const candidates = [updated, created, occurred].filter((n) => Number.isFinite(n));
+  return candidates.length > 0 ? Math.max(...candidates) : 0;
+}
+
 function ClassNoteBodyPreview({
   html,
   noteId,
@@ -351,7 +359,14 @@ function ClassNoteAttachmentsBar({
   const [attachmentsExpanded, setAttachmentsExpanded] = useState(false);
   const [blobReady, setBlobReady] = useState<Record<string, boolean>>({});
   const attachments = note.attachments ?? [];
-  const attachmentSig = useMemo(() => attachments.map((a) => `${a.id}:${a.size}`).join("|"), [attachments]);
+  const presentationAttachments = useMemo(
+    () => attachments.filter((att) => !isClassNoteImageAttachment(att)),
+    [attachments]
+  );
+  const attachmentSig = useMemo(
+    () => presentationAttachments.map((a) => `${a.id}:${a.size}`).join("|"),
+    [presentationAttachments]
+  );
 
   useEffect(() => {
     if (!uploadSuccess) return;
@@ -360,14 +375,14 @@ function ClassNoteAttachmentsBar({
   }, [uploadSuccess]);
 
   useEffect(() => {
-    if ((note.attachments ?? []).length > 0) {
+    if (presentationAttachments.length > 0) {
       setAttachmentsExpanded(true);
     }
-  }, [note.attachments]);
+  }, [presentationAttachments.length]);
 
   useEffect(() => {
     let cancelled = false;
-    const list = note.attachments ?? [];
+    const list = presentationAttachments;
     void (async () => {
       await new Promise<void>((r) => queueMicrotask(() => r()));
       const next: Record<string, boolean> = {};
@@ -380,7 +395,7 @@ function ClassNoteAttachmentsBar({
     return () => {
       cancelled = true;
     };
-  }, [note.id, attachmentSig]);
+  }, [note.id, attachmentSig, presentationAttachments]);
 
   const handlePresentationFiles = async (event: ChangeEvent<HTMLInputElement>) => {
     const input = event.target;
@@ -541,9 +556,9 @@ function ClassNoteAttachmentsBar({
             <Presentation className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden />
             Presentations
           </span>
-          {attachments.length > 0 ? (
+          {presentationAttachments.length > 0 ? (
             <Badge className="border-sky-200/80 bg-sky-50 text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-100">
-              {attachments.length}
+              {presentationAttachments.length}
             </Badge>
           ) : null}
           <button
@@ -593,12 +608,12 @@ function ClassNoteAttachmentsBar({
           ) : null}
 
           <ul className="mt-2 space-y-2" aria-label="Attached files">
-            {attachments.length === 0 ? (
+            {presentationAttachments.length === 0 ? (
               <li className="rounded-xl border border-dashed border-slate-300/80 px-3 py-2 text-center text-xs text-slate-500 dark:border-white/15 dark:text-slate-400">
-                No files yet. Use <span className="font-medium text-slate-700 dark:text-slate-200">Upload</span> or paste images in the editor.
+                No presentation files yet. Use <span className="font-medium text-slate-700 dark:text-slate-200">Upload</span> for PDF/PPTX files.
               </li>
             ) : (
-              attachments.map((att) => renderRow(att, ENABLE_AI_SUMMARY && !isClassNoteImageAttachment(att)))
+              presentationAttachments.map((att) => renderRow(att, ENABLE_AI_SUMMARY))
             )}
           </ul>
         </>
@@ -644,6 +659,22 @@ function ClassNoteFullscreenEditor({
       editorMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (editorTab !== "write") return;
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key !== "a") return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.id === "class-note-title") return;
+      event.preventDefault();
+      richEditorRef.current?.focusEditor();
+      richEditorRef.current?.selectAll();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [editorTab]);
 
   const ankiSourceText = classNoteBodyToPlainText(note.bodyMarkdown).trim();
   const hasAnkiSourceText = ankiSourceText.length > 0;
@@ -1087,13 +1118,11 @@ function ClassNotesPanelInner({
   const [editorTab, setEditorTab] = useState<"write" | "preview">("write");
   const activeCourses = useMemo(() => courses.filter((c) => !c.archived), [courses]);
 
-  /** Most recently touched note per course (new or edit); courses with no notes sort last. */
+  /** Most recently touched note per course (new note or edit); courses with no notes sort last. */
   const activeCoursesByRecency = useMemo(() => {
     const lastMsByCourse = new Map<string, number>();
     for (const note of classNotes) {
-      const updated = new Date(note.updatedAt).getTime();
-      const created = new Date(note.createdAt).getTime();
-      const t = Math.max(Number.isNaN(updated) ? 0 : updated, Number.isNaN(created) ? 0 : created);
+      const t = noteActivityMs(note);
       const prev = lastMsByCourse.get(note.courseId) ?? 0;
       if (t > prev) lastMsByCourse.set(note.courseId, t);
     }
