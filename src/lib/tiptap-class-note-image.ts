@@ -111,11 +111,9 @@ export const ClassNoteImage = Node.create({
         { key: "se", style: { right: "-6px", bottom: "-6px", cursor: "nwse-resize" } }
       ];
 
-      let selected = false;
       let resizing = false;
 
       const setSelectedUi = (isSelected: boolean) => {
-        selected = isSelected;
         img.style.outline = isSelected ? "2px solid rgba(56,189,248,0.85)" : "";
         img.style.outlineOffset = isSelected ? "2px" : "";
         for (const h of handles) {
