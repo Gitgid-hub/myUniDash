@@ -7,7 +7,7 @@ export function createSeedState(): SchoolState {
     workBlocks: [],
     classNotes: [],
     reminderSettings: {
-      offsetsHours: [168, 72, 24, 2]
+      offsetsHours: [336, 168, 72, 24, 2]
     },
     ui: {
       activeView: "dashboard",

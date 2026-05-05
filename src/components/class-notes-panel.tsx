@@ -1087,6 +1087,24 @@ function ClassNotesPanelInner({
   const [editorTab, setEditorTab] = useState<"write" | "preview">("write");
   const activeCourses = useMemo(() => courses.filter((c) => !c.archived), [courses]);
 
+  /** Most recently touched note per course (new or edit); courses with no notes sort last. */
+  const activeCoursesByRecency = useMemo(() => {
+    const lastMsByCourse = new Map<string, number>();
+    for (const note of classNotes) {
+      const updated = new Date(note.updatedAt).getTime();
+      const created = new Date(note.createdAt).getTime();
+      const t = Math.max(Number.isNaN(updated) ? 0 : updated, Number.isNaN(created) ? 0 : created);
+      const prev = lastMsByCourse.get(note.courseId) ?? 0;
+      if (t > prev) lastMsByCourse.set(note.courseId, t);
+    }
+    return [...activeCourses].sort((a, b) => {
+      const tb = lastMsByCourse.get(b.id) ?? 0;
+      const ta = lastMsByCourse.get(a.id) ?? 0;
+      if (tb !== ta) return tb - ta;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+  }, [activeCourses, classNotes]);
+
   const notesByCourse = useMemo(() => {
     const map = new Map<string, ClassNote[]>();
     for (const note of classNotes) {
@@ -1179,7 +1197,7 @@ function ClassNotesPanelInner({
             {activeCourses.length === 0 ? (
               <Panel className="p-6 text-sm text-slate-500 dark:text-slate-400">Add a course to start collecting class notes.</Panel>
             ) : (
-              activeCourses.map((course) => {
+              activeCoursesByRecency.map((course) => {
                 const list = notesByCourse.get(course.id) ?? [];
                 return (
                   <Panel key={course.id} className="overflow-visible p-0">

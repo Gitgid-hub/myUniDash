@@ -242,3 +242,8 @@ create index if not exists early_access_requests_email_idx
 
 alter table public.early_access_grants enable row level security;
 alter table public.early_access_requests enable row level security;
+
+-- Optional: speeds up `/api/calendar/sessions?token=` lookups (token lives in `state.ui.calendarFeedToken`).
+create index if not exists user_states_calendar_feed_token_idx
+  on public.user_states ((state #>> '{ui,calendarFeedToken}'))
+  where coalesce(nullif(trim(state #>> '{ui,calendarFeedToken}'), ''), '') <> '';

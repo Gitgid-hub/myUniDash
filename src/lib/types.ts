@@ -173,6 +173,10 @@ export interface UIState {
    * When false, only the calendar “Weekly catch-up” control opens the flow (no timed auto prompt).
    */
   weeklyCatchUpAutoPrompt?: boolean;
+  /**
+   * Opaque secret for `/api/calendar/sessions` (Apple Calendar “subscription” URL). Anyone with the link can read your class schedule; rotate from the calendar export dialog if leaked.
+   */
+  calendarFeedToken?: string;
 }
 
 export interface SchoolState {

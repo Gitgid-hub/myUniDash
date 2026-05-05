@@ -5,6 +5,11 @@ import { SupabaseStateStore } from "@/lib/cloud-store";
 import { nowIso } from "@/lib/date";
 import { pushSchoolOsToast } from "@/lib/global-app-toasts";
 import { createId } from "@/lib/id";
+import {
+  mergeAdHocExamTasksIntoList,
+  mergeAdHocExamsIntoCourse,
+  mergeAdHocReminderOffsets
+} from "@/lib/ad-hoc-sem-b-exams-2026";
 import { createSeedState } from "@/lib/seed";
 import { LocalStorageStore } from "@/lib/storage";
 import type {
@@ -68,6 +73,8 @@ type Action =
   | { type: "remove-catch-up-submitted-week"; payload: string }
   | { type: "prune-catch-up-submitted-weeks"; payload: { beforeWeekKey: string } }
   | { type: "set-weekly-catch-up-auto-prompt"; payload: boolean }
+  | { type: "ensure-calendar-feed-token" }
+  | { type: "rotate-calendar-feed-token" }
   | { type: "add-task"; payload: TaskInput }
   | { type: "update-task"; payload: Partial<Task> & { id: ID } }
   | { type: "toggle-task-done"; payload: ID }
@@ -112,7 +119,7 @@ const fallback: SchoolState = {
   tasks: [],
   workBlocks: [],
   classNotes: [],
-  reminderSettings: { offsetsHours: [168, 72, 24, 2] },
+  reminderSettings: { offsetsHours: [336, 168, 72, 24, 2] },
   ui: {
     activeView: "dashboard",
     selectedCourseId: "all",
@@ -147,10 +154,14 @@ function normalizeTask(task: Task): Task {
 }
 
 function normalizeState(state: SchoolState): SchoolState {
+  const courses = state.courses.map((course) => normalizeCourse(mergeAdHocExamsIntoCourse(course)));
+  const tasks = mergeAdHocExamTasksIntoList(state.tasks ?? [], courses, nowIso()).map(normalizeTask);
+  const reminderSettings = mergeAdHocReminderOffsets(state.reminderSettings ?? fallback.reminderSettings);
   return {
     ...state,
-    courses: state.courses.map(normalizeCourse),
-    tasks: (state.tasks ?? []).map(normalizeTask),
+    courses,
+    tasks,
+    reminderSettings,
     workBlocks: state.workBlocks ?? [],
     classNotes: (state.classNotes ?? []).map(normalizeClassNote),
     ui: {
@@ -166,7 +177,8 @@ function normalizeState(state: SchoolState): SchoolState {
       catchUpSubmittedWeekKeys: Array.isArray(state.ui?.catchUpSubmittedWeekKeys)
         ? Array.from(new Set(state.ui!.catchUpSubmittedWeekKeys.filter((k): k is string => typeof k === "string")))
         : [],
-      weeklyCatchUpAutoPrompt: state.ui?.weeklyCatchUpAutoPrompt ?? true
+      weeklyCatchUpAutoPrompt: state.ui?.weeklyCatchUpAutoPrompt ?? true,
+      calendarFeedToken: state.ui?.calendarFeedToken
     }
   };
 }
@@ -196,19 +208,27 @@ function reducer(state: SchoolState, action: Action): SchoolState {
   switch (action.type) {
     case "hydrate":
       return normalizeState(action.payload);
-    case "restore-calendar":
+    case "restore-calendar": {
+      const courses = action.payload.courses.map((course) => normalizeCourse(mergeAdHocExamsIntoCourse(course)));
       return {
         ...state,
-        courses: action.payload.courses.map(normalizeCourse),
+        courses,
+        tasks: mergeAdHocExamTasksIntoList(state.tasks ?? [], courses, nowIso()).map(normalizeTask),
+        reminderSettings: mergeAdHocReminderOffsets(state.reminderSettings ?? fallback.reminderSettings),
         workBlocks: action.payload.workBlocks ?? []
       };
-    case "replace-course":
+    }
+    case "replace-course": {
+      const courses = state.courses.map((course) =>
+        course.id === action.payload.id ? normalizeCourse(mergeAdHocExamsIntoCourse(action.payload)) : course
+      );
       return {
         ...state,
-        courses: state.courses.map((course) =>
-          course.id === action.payload.id ? normalizeCourse(action.payload) : course
-        )
+        courses,
+        tasks: mergeAdHocExamTasksIntoList(state.tasks ?? [], courses, nowIso()).map(normalizeTask),
+        reminderSettings: mergeAdHocReminderOffsets(state.reminderSettings ?? fallback.reminderSettings)
       };
+    }
     case "replace-work-block":
       return {
         ...state,
@@ -253,6 +273,12 @@ function reducer(state: SchoolState, action: Action): SchoolState {
     }
     case "set-weekly-catch-up-auto-prompt":
       return { ...state, ui: { ...state.ui, weeklyCatchUpAutoPrompt: action.payload } };
+    case "ensure-calendar-feed-token": {
+      if (state.ui.calendarFeedToken) return state;
+      return { ...state, ui: { ...state.ui, calendarFeedToken: crypto.randomUUID() } };
+    }
+    case "rotate-calendar-feed-token":
+      return { ...state, ui: { ...state.ui, calendarFeedToken: crypto.randomUUID() } };
     case "add-task": {
       const now = nowIso();
       const newTask: Task = {
@@ -324,15 +350,27 @@ function reducer(state: SchoolState, action: Action): SchoolState {
         updatedAt: now
       };
 
-      return { ...state, courses: [newCourse, ...state.courses] };
-    }
-    case "update-course":
+      const courses = [normalizeCourse(mergeAdHocExamsIntoCourse(newCourse)), ...state.courses];
       return {
         ...state,
-        courses: state.courses.map((course) =>
-          course.id === action.payload.id ? normalizeCourse({ ...course, ...action.payload, updatedAt: nowIso() }) : course
-        )
+        courses,
+        tasks: mergeAdHocExamTasksIntoList(state.tasks ?? [], courses, nowIso()).map(normalizeTask),
+        reminderSettings: mergeAdHocReminderOffsets(state.reminderSettings ?? fallback.reminderSettings)
       };
+    }
+    case "update-course": {
+      const courses = state.courses.map((course) =>
+        course.id === action.payload.id
+          ? normalizeCourse(mergeAdHocExamsIntoCourse({ ...course, ...action.payload, updatedAt: nowIso() }))
+          : course
+      );
+      return {
+        ...state,
+        courses,
+        tasks: mergeAdHocExamTasksIntoList(state.tasks ?? [], courses, nowIso()).map(normalizeTask),
+        reminderSettings: mergeAdHocReminderOffsets(state.reminderSettings ?? fallback.reminderSettings)
+      };
+    }
     case "archive-course":
       return {
         ...state,
@@ -396,7 +434,7 @@ function reducer(state: SchoolState, action: Action): SchoolState {
     case "set-alert-offsets":
       return {
         ...state,
-        reminderSettings: { offsetsHours: action.payload.sort((a, b) => b - a) }
+        reminderSettings: mergeAdHocReminderOffsets({ offsetsHours: action.payload.sort((a, b) => b - a) })
       };
     case "add-class-note": {
       const now = nowIso();
