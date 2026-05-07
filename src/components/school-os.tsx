@@ -147,11 +147,22 @@ const KANBAN_BOARD_LAYOUT_STORAGE_KEY = "school-os:kanban-board-layout:v1";
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
 const RELEASE_ANNOUNCEMENT_SEEN_KEY = "school-os:release-announcement-seen:v1";
 const RELEASE_ANNOUNCEMENT_VERSION = "2026-05-05-class-notes-images-v2";
+const TASK_GENERATOR_UPDATE_SEEN_KEY = "school-os:task-generator-update-seen:v1";
+const TASK_GENERATOR_UPDATE_VERSION = "2026-05-07-task-generator-v1";
 const UNRELATED_SESSIONS_COURSE_ID = "course-unrelated-sessions";
 type CatalogDegreeOption = {
   id: string;
   roadmapCode: string;
   label: string;
+};
+type AiParsedTaskDraft = {
+  id: string;
+  title: string;
+  description: string;
+  dueAt: string;
+  priority: TaskPriority;
+  include: boolean;
+  phase?: string;
 };
 const DEFAULT_CATALOG_DEGREES: CatalogDegreeOption[] = [];
 const CATALOG_DEGREE_STORAGE_KEY = "school-os:catalog-degree:v1";
@@ -505,11 +516,17 @@ type CalendarUndoEntry =
   | { type: "replace-work-block"; block: WorkBlock }
   | { type: "insert-work-block"; block: WorkBlock };
 
-type TaskUndoEntry = {
-  id: string;
-  status: TaskStatus;
-  completedAt?: string;
-};
+type TaskUndoEntry =
+  | {
+      type: "toggle";
+      id: string;
+      status: TaskStatus;
+      completedAt?: string;
+    }
+  | {
+      type: "delete";
+      task: Task;
+    };
 
 type FeatureRequestItem = {
   id: number;
@@ -602,6 +619,13 @@ export function SchoolOS() {
     }
   }, []);
   const [composerInitialCourseId, setComposerInitialCourseId] = useState<string | "general" | undefined>(undefined);
+  const [aiTaskImportOpen, setAiTaskImportOpen] = useState(false);
+  const [aiTaskImportCourseId, setAiTaskImportCourseId] = useState<string | "general" | "">("");
+  const [aiTaskImportText, setAiTaskImportText] = useState("");
+  const [aiTaskImportItems, setAiTaskImportItems] = useState<AiParsedTaskDraft[]>([]);
+  const [aiTaskImportParsing, setAiTaskImportParsing] = useState(false);
+  const [aiTaskImportError, setAiTaskImportError] = useState<string | null>(null);
+  const [aiTaskImportCreating, setAiTaskImportCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [calendarMode, setCalendarMode] = useState<"month" | "week" | "day">("week");
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => new Date());
@@ -632,6 +656,8 @@ export function SchoolOS() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [releaseAnnouncementOpen, setReleaseAnnouncementOpen] = useState(false);
   const releaseAnnouncementTitleRef = useRef<HTMLHeadingElement | null>(null);
+  const [taskGeneratorUpdateOpen, setTaskGeneratorUpdateOpen] = useState(false);
+  const [taskGeneratorNudgeActive, setTaskGeneratorNudgeActive] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [featureRequestMessage, setFeatureRequestMessage] = useState("");
   const [featureRequestShots, setFeatureRequestShots] = useState<Array<{ name: string; mimeType: string; dataUrl: string }>>([]);
@@ -837,23 +863,47 @@ export function SchoolOS() {
     dispatch({ type: "delete-work-block", payload: id });
   }, [dispatch, pushCalendarUndoEntry, state.workBlocks]);
 
+  const pushTaskUndoEntry = useCallback((entry: TaskUndoEntry) => {
+    taskUndoStackRef.current.push(entry);
+    if (taskUndoStackRef.current.length > 80) {
+      taskUndoStackRef.current.shift();
+    }
+  }, []);
+
   const toggleTaskDoneWithUndo = useCallback((id: string) => {
     const previous = state.tasks.find((task) => task.id === id);
     if (!previous) return;
-    taskUndoStackRef.current.push({
+    pushTaskUndoEntry({
+      type: "toggle",
       id: previous.id,
       status: previous.status,
       completedAt: previous.completedAt
     });
-    if (taskUndoStackRef.current.length > 80) {
-      taskUndoStackRef.current.shift();
-    }
     toggleTaskDone(id);
-  }, [state.tasks, toggleTaskDone]);
+  }, [pushTaskUndoEntry, state.tasks, toggleTaskDone]);
 
   const undoTaskToggle = useCallback(() => {
     const previous = taskUndoStackRef.current.pop();
     if (!previous) return;
+    if (previous.type === "delete") {
+      dispatch({
+        type: "add-task",
+        payload: {
+          id: previous.task.id,
+          title: previous.task.title,
+          description: previous.task.description,
+          courseId: previous.task.courseId,
+          status: previous.task.status,
+          dueAt: previous.task.dueAt,
+          priority: previous.task.priority,
+          effort: previous.task.effort,
+          tags: previous.task.tags,
+          attachments: previous.task.attachments,
+          recurring: previous.task.recurring
+        }
+      });
+      return;
+    }
     dispatch({
       type: "update-task",
       payload: {
@@ -1336,6 +1386,21 @@ export function SchoolOS() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const seenVersion = window.localStorage.getItem(TASK_GENERATOR_UPDATE_SEEN_KEY);
+    if (seenVersion === TASK_GENERATOR_UPDATE_VERSION) return;
+    dispatch({ type: "set-view", payload: "kanban" });
+    setTaskGeneratorNudgeActive(true);
+    setTaskGeneratorUpdateOpen(true);
+  }, [dispatch]);
+
+  useEffect(() => {
+    if (!taskGeneratorUpdateOpen) return;
+    if (state.ui.activeView === "kanban") return;
+    dispatch({ type: "set-view", payload: "kanban" });
+  }, [dispatch, state.ui.activeView, taskGeneratorUpdateOpen]);
+
+  useEffect(() => {
     if (!releaseAnnouncementOpen) return;
     const titleEl = releaseAnnouncementTitleRef.current;
     if (!titleEl) return;
@@ -1771,6 +1836,13 @@ export function SchoolOS() {
           score: 10
         },
         {
+          id: "cmd-ai-task-import",
+          title: "Task generator",
+          subtitle: "Paste a plan and generate tasks",
+          terms: "task generator plan import tasks parse deadlines milestones",
+          score: 12
+        },
+        {
           id: "cmd-class-notes",
           title: "Class Notes",
           subtitle: "Lecture notes and drafts",
@@ -1943,6 +2015,10 @@ export function SchoolOS() {
     const workload = workloadByCourse(state.tasks, activeCourses);
     return { completed, workload };
   }, [state.tasks, activeCourses]);
+  const catchUpEligibleCourses = useMemo(
+    () => activeCourses.filter((course) => course.id !== UNRELATED_SESSIONS_COURSE_ID),
+    [activeCourses]
+  );
 
   const handleCreateTask = useCallback(
     (input: {
@@ -1988,17 +2064,139 @@ export function SchoolOS() {
   const handleDeleteTask = useCallback(
     (id: string) => {
       const task = state.tasks.find((t) => t.id === id);
+      if (task) {
+        pushTaskUndoEntry({ type: "delete", task });
+      }
       if (task?.attachments?.length) {
         void deleteTaskAttachmentBlobsForTask(user?.id, id).catch(() => {});
       }
       dispatch({ type: "delete-task", payload: id });
     },
-    [dispatch, state.tasks]
+    [dispatch, pushTaskUndoEntry, state.tasks, user?.id]
   );
   const handleOpenComposer = useCallback((courseId?: string | "general") => {
     setComposerInitialCourseId(courseId);
     dispatch({ type: "set-composer", payload: true });
   }, [dispatch]);
+  const handleOpenAiTaskImport = useCallback(
+    () => {
+      setTaskGeneratorNudgeActive(false);
+      setAiTaskImportOpen(true);
+      setAiTaskImportError(null);
+      setAiTaskImportItems([]);
+      setAiTaskImportCreating(false);
+      setAiTaskImportParsing(false);
+      setAiTaskImportText("");
+      setAiTaskImportCourseId("");
+    },
+    []
+  );
+  const handleParseAiTaskImport = useCallback(async () => {
+    if (!aiTaskImportCourseId) {
+      setAiTaskImportError("Choose a course before parsing.");
+      return;
+    }
+    if (aiTaskImportCourseId !== "general" && !state.courses.some((course) => course.id === aiTaskImportCourseId && !course.archived)) {
+      setAiTaskImportError("Selected course is no longer available.");
+      return;
+    }
+    const text = aiTaskImportText.trim();
+    if (!text) {
+      setAiTaskImportError("Paste your task plan text first.");
+      return;
+    }
+    setAiTaskImportParsing(true);
+    setAiTaskImportError(null);
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        ...(await getAuthHeader())
+      };
+      const res = await fetch("/api/tasks/parse-plan", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ sourceText: text })
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error ?? "Could not parse tasks.");
+      }
+      const raw = Array.isArray(payload.tasks) ? payload.tasks : [];
+      const mapped: AiParsedTaskDraft[] = raw
+        .map((task: Record<string, unknown>, index: number) => {
+          const title = typeof task.title === "string" ? task.title.trim() : "";
+          if (!title) return null;
+          const description = typeof task.description === "string" ? task.description.trim() : "";
+          const dueIso = typeof task.dueAt === "string" ? task.dueAt : "";
+          const due = dueIso ? new Date(dueIso) : null;
+          const dueAt = due && !Number.isNaN(due.getTime()) ? toLocalDateTimeInput(due) : "";
+          const phase = typeof task.phase === "string" ? task.phase.trim() : "";
+          const priorityToken = typeof task.priority === "string" ? task.priority : "";
+          const priority: TaskPriority =
+            priorityToken === "low" || priorityToken === "medium" || priorityToken === "high" || priorityToken === "urgent"
+              ? priorityToken
+              : "medium";
+          return {
+            id: `ai-task-${index}-${Math.random().toString(36).slice(2, 8)}`,
+            title,
+            description,
+            dueAt,
+            priority,
+            include: true,
+            phase: phase || undefined
+          } satisfies AiParsedTaskDraft;
+        })
+        .filter((task: AiParsedTaskDraft | null): task is AiParsedTaskDraft => Boolean(task));
+      setAiTaskImportItems(mapped);
+      if (mapped.length === 0) {
+        setAiTaskImportError("No actionable tasks detected. Try clearer bullets with dates.");
+      }
+    } catch (error) {
+      setAiTaskImportError(error instanceof Error ? error.message : "Could not parse tasks.");
+    } finally {
+      setAiTaskImportParsing(false);
+    }
+  }, [aiTaskImportCourseId, aiTaskImportText, getAuthHeader, state.courses]);
+  const handleCreateAiImportedTasks = useCallback(async () => {
+    if (!aiTaskImportCourseId) {
+      setAiTaskImportError("Choose a course before creating tasks.");
+      return;
+    }
+    if (aiTaskImportCourseId !== "general" && !state.courses.some((course) => course.id === aiTaskImportCourseId && !course.archived)) {
+      setAiTaskImportError("Selected course is no longer available.");
+      return;
+    }
+    const selected = aiTaskImportItems.filter((item) => item.include && item.title.trim().length > 0);
+    if (selected.length === 0) {
+      setAiTaskImportError("Select at least one parsed task.");
+      return;
+    }
+    setAiTaskImportCreating(true);
+    try {
+      for (const item of selected) {
+        const description = [item.phase ? `Phase: ${item.phase}` : "", item.description]
+          .filter((part) => part.trim().length > 0)
+          .join("\n");
+        handleCreateTask({
+          title: item.title.trim(),
+          description,
+          courseId: aiTaskImportCourseId,
+          dueAt: item.dueAt ? new Date(item.dueAt).toISOString() : undefined,
+          priority: item.priority,
+          status: "backlog"
+        });
+      }
+      pushSchoolOsToast({ kind: "success", message: `Created ${selected.length} task${selected.length === 1 ? "" : "s"}.` });
+      setAiTaskImportOpen(false);
+      setAiTaskImportItems([]);
+      setAiTaskImportText("");
+      setAiTaskImportError(null);
+      setAiTaskImportCreating(false);
+      dispatch({ type: "set-view", payload: "kanban" });
+    } finally {
+      setAiTaskImportCreating(false);
+    }
+  }, [aiTaskImportCourseId, aiTaskImportItems, dispatch, handleCreateTask, state.courses]);
   const handleCalendarSessionClick = useCallback((courseId: string, meetingId: string, anchorDate?: Date) => {
     setSelectedCalendarSession({
       courseId,
@@ -2018,7 +2216,7 @@ export function SchoolOS() {
   const openWeeklyCatchUpForAnchor = useCallback(
     (anchorDate: Date) => {
       const { start, end } = getAcademicWeekSunThu(anchorDate);
-      const occ = sortCatchUpOccurrencesBySchedule(listCatchUpOccurrences(activeCourses, start, end));
+      const occ = sortCatchUpOccurrencesBySchedule(listCatchUpOccurrences(catchUpEligibleCourses, start, end));
       setWeeklyCatchUpOccurrences(occ);
       setWeeklyCatchUpWeekKey(academicWeekKeyFromAnchor(anchorDate));
       setWeeklyCatchUpWeekLabel(
@@ -2026,7 +2224,7 @@ export function SchoolOS() {
       );
       setWeeklyCatchUpOpen(true);
     },
-    [activeCourses]
+    [catchUpEligibleCourses]
   );
 
   const openWeeklyCatchUpRef = useRef(openWeeklyCatchUpForAnchor);
@@ -2042,7 +2240,7 @@ export function SchoolOS() {
       const weekKey = academicWeekKeyFromAnchor(now);
       if (state.ui?.catchUpPromptedWeekKey === weekKey) return;
       const { start, end } = getAcademicWeekSunThu(now);
-      const occ = listCatchUpOccurrences(activeCourses, start, end);
+      const occ = listCatchUpOccurrences(catchUpEligibleCourses, start, end);
       const weekSunday = startOfWeekGrid(now, "sunday");
       const triggerAt = getLastThursdaySessionEndInWeek(occ, weekSunday);
       const beforeThursday = now.getTime() < triggerAt.getTime();
@@ -2064,7 +2262,7 @@ export function SchoolOS() {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [ready, activeCourses, state.ui?.catchUpPromptedWeekKey, dispatch, weeklyCatchUpDemo, weeklyCatchUpAutoPrompt]);
+  }, [ready, catchUpEligibleCourses, state.ui?.catchUpPromptedWeekKey, dispatch, weeklyCatchUpDemo, weeklyCatchUpAutoPrompt]);
 
   const submittedCatchUpWeeks = useMemo(
     () => new Set(state.ui?.catchUpSubmittedWeekKeys ?? []),
@@ -2092,7 +2290,7 @@ export function SchoolOS() {
         openWeeklyCatchUpForAnchor(weekAnchorDate);
         return;
       }
-      const lastEnd = lastScheduledLectureTutorialEndInSunThuWeek(weekAnchorDate, activeCourses);
+      const lastEnd = lastScheduledLectureTutorialEndInSunThuWeek(weekAnchorDate, catchUpEligibleCourses);
       const now = new Date();
       if (now.getTime() < lastEnd.getTime()) {
         const { start, end } = getAcademicWeekSunThu(weekAnchorDate);
@@ -2104,14 +2302,14 @@ export function SchoolOS() {
       setWeeklyCatchUpDemo(false);
       openWeeklyCatchUpForAnchor(weekAnchorDate);
     },
-    [activeCourses, isWeekKeySubmitted, openWeeklyCatchUpForAnchor]
+    [catchUpEligibleCourses, isWeekKeySubmitted, openWeeklyCatchUpForAnchor]
   );
 
   const handleDemoWeeklyCatchUp = useCallback(() => {
     purgeWeeklyCatchUpDemoTasks();
     const demoAnchor = getDemoWeeklyCatchupVirtualNow();
     const { start, end } = getAcademicWeekSunThu(demoAnchor);
-    const occ = listCatchUpOccurrences(activeCourses, start, end);
+    const occ = listCatchUpOccurrences(catchUpEligibleCourses, start, end);
     if (occ.length === 0) {
       pushSchoolOsToast({
         kind: "error",
@@ -2122,7 +2320,7 @@ export function SchoolOS() {
     }
     setWeeklyCatchUpDemo(true);
     openWeeklyCatchUpForAnchor(demoAnchor);
-  }, [activeCourses, openWeeklyCatchUpForAnchor, purgeWeeklyCatchUpDemoTasks]);
+  }, [catchUpEligibleCourses, openWeeklyCatchUpForAnchor, purgeWeeklyCatchUpDemoTasks]);
 
   const calendarCloudSignedIn = authEnabled && Boolean(user);
 
@@ -3067,6 +3265,8 @@ export function SchoolOS() {
                 onFocus={handleFocusTask}
                 onToggleDone={handleKanbanToggleDone}
                 onOpenComposer={handleOpenComposer}
+                onOpenAiImport={handleOpenAiTaskImport}
+                highlightTaskGenerator={taskGeneratorNudgeActive}
                 glowTaskIds={catchUpGlowTaskIds}
               />
             </div>
@@ -4276,6 +4476,65 @@ export function SchoolOS() {
           onSave={handleCreateTask}
         />
       )}
+      {aiTaskImportOpen && (
+        <AiTaskImportModal
+          courses={activeCourses}
+          selectedCourseId={aiTaskImportCourseId}
+          planText={aiTaskImportText}
+          items={aiTaskImportItems}
+          parsing={aiTaskImportParsing}
+          creating={aiTaskImportCreating}
+          error={aiTaskImportError}
+          onClose={() => setAiTaskImportOpen(false)}
+          onChangeCourse={setAiTaskImportCourseId}
+          onChangeText={setAiTaskImportText}
+          onParse={() => void handleParseAiTaskImport()}
+          onToggleInclude={(id) =>
+            setAiTaskImportItems((current) => current.map((item) => (item.id === id ? { ...item, include: !item.include } : item)))
+          }
+          onChangeItem={(id, patch) =>
+            setAiTaskImportItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+          }
+          onCreate={() => void handleCreateAiImportedTasks()}
+        />
+      )}
+      {taskGeneratorUpdateOpen && (
+        <div className="fixed inset-0 z-[57] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
+          <Panel className="w-full max-w-lg rounded-[24px] bg-white/95 p-6 dark:bg-[#101317]/95">
+            <h3 className="text-lg font-semibold tracking-tight">New update: Task generator</h3>
+            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+              You can now paste a study plan and generate tasks with deadlines. We opened Kanban for you and highlighted the
+              Task generator button.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem(TASK_GENERATOR_UPDATE_SEEN_KEY, TASK_GENERATOR_UPDATE_VERSION);
+                  }
+                  setTaskGeneratorNudgeActive(false);
+                  setTaskGeneratorUpdateOpen(false);
+                }}
+              >
+                Later
+              </Button>
+              <Button
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem(TASK_GENERATOR_UPDATE_SEEN_KEY, TASK_GENERATOR_UPDATE_VERSION);
+                  }
+                  dispatch({ type: "set-view", payload: "kanban" });
+                  setTaskGeneratorUpdateOpen(false);
+                  window.setTimeout(() => setTaskGeneratorNudgeActive(false), 12000);
+                }}
+              >
+                Try it now
+              </Button>
+            </div>
+          </Panel>
+        </div>
+      )}
       {releaseAnnouncementOpen && (
         <div className="fixed inset-0 z-[56] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
           <Panel className="w-full max-w-xl rounded-[28px] bg-white/95 p-6 dark:bg-[#101317]/95">
@@ -4388,6 +4647,9 @@ export function SchoolOS() {
                 dispatch({ type: "set-view", payload: "dashboard" });
               } else if (result.id === "cmd-kanban") {
                 dispatch({ type: "set-view", payload: "kanban" });
+              } else if (result.id === "cmd-ai-task-import") {
+                dispatch({ type: "set-view", payload: "kanban" });
+                handleOpenAiTaskImport();
               } else if (result.id === "cmd-class-notes") {
                 dispatch({ type: "set-view", payload: "class-notes" });
               } else if (result.id === "cmd-courses") {
@@ -4606,6 +4868,8 @@ function KanbanView({
   onFocus,
   onToggleDone,
   onOpenComposer,
+  onOpenAiImport,
+  highlightTaskGenerator,
   glowTaskIds
 }: {
   tasks: Task[];
@@ -4624,6 +4888,8 @@ function KanbanView({
   onFocus: (id: string) => void;
   onToggleDone: (id: string) => void;
   onOpenComposer: (courseId?: string | "general") => void;
+  onOpenAiImport: (courseId?: string | "general") => void;
+  highlightTaskGenerator?: boolean;
   /** Tasks to highlight with a soft animated glow (one-shot, view-scoped). */
   glowTaskIds?: string[];
 }) {
@@ -4898,14 +5164,21 @@ function KanbanView({
               </button>
             </div>
           </div>
-          {tab === "completed" && (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => onOpenAiImport()}
+              className={`h-8 px-3 text-xs ${highlightTaskGenerator ? "ring-2 ring-sky-400/85 shadow-[0_0_22px_rgba(56,189,248,0.45)] animate-pulse" : ""}`}
+            >
+              Task generator
+            </Button>
+            {tab === "completed" && (
               <div className="flex items-center gap-2 rounded-2xl border border-emerald-200/60 bg-emerald-500/10 px-3 py-2 dark:border-emerald-500/25 dark:bg-emerald-500/10">
                 <span className="text-xs font-medium uppercase tracking-wide text-emerald-800/90 dark:text-emerald-200/90">This week</span>
                 <span className="text-sm font-semibold tabular-nums text-emerald-800 dark:text-emerald-200">{thisWeekCompletedCount}</span>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {tab === "completed" && weeklyCompletedBuckets.length > 0 && (
@@ -4984,6 +5257,13 @@ function KanbanView({
                     {sortedTasks.map((task) => renderKanbanTaskRow(task, false))}
                   </div>
                   <div className="flex justify-end border-t border-slate-200/70 px-4 py-2.5 dark:border-white/10">
+                    <Button
+                      variant="outline"
+                      onClick={() => onOpenAiImport(group.id === "general" ? "general" : group.id)}
+                      className={`mr-2 h-8 px-3 text-xs ${highlightTaskGenerator ? "ring-2 ring-sky-400/85 shadow-[0_0_22px_rgba(56,189,248,0.45)] animate-pulse" : ""}`}
+                    >
+                      Task generator
+                    </Button>
                     <Button variant="outline" onClick={() => onOpenComposer(group.id === "general" ? "general" : group.id)} className="h-8 px-3 text-xs">
                       <Plus className="mr-1 h-3.5 w-3.5" />
                       Add task
@@ -5030,6 +5310,13 @@ function KanbanView({
               {sortedDueQueueTasks.map((task) => renderKanbanTaskRow(task, true))}
             </div>
             <div className="flex justify-end border-t border-slate-200/70 px-4 py-2.5 dark:border-white/10">
+              <Button
+                variant="outline"
+                onClick={() => onOpenAiImport()}
+                className={`mr-2 h-8 px-3 text-xs ${highlightTaskGenerator ? "ring-2 ring-sky-400/85 shadow-[0_0_22px_rgba(56,189,248,0.45)] animate-pulse" : ""}`}
+              >
+                Task generator
+              </Button>
               <Button variant="outline" onClick={() => onOpenComposer()} className="h-8 px-3 text-xs">
                 <Plus className="mr-1 h-3.5 w-3.5" />
                 Add task
@@ -5056,6 +5343,13 @@ function KanbanView({
             <>
               <p>No tasks yet. Add a task to start building your board.</p>
               <div className="mt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => onOpenAiImport()}
+                  className={`mr-2 ${highlightTaskGenerator ? "ring-2 ring-sky-400/85 shadow-[0_0_22px_rgba(56,189,248,0.45)] animate-pulse" : ""}`}
+                >
+                  Task generator
+                </Button>
                 <Button onClick={() => onOpenComposer()}>
                   <Plus className="mr-1 h-4 w-4" />
                   Add task
@@ -7641,6 +7935,193 @@ function CalendarView({
 
 const TASK_COMPOSER_MAX_FILES = 12;
 const TASK_DETAIL_MAX_ATTACHMENTS = 24;
+
+function AiTaskImportModal({
+  courses,
+  selectedCourseId,
+  planText,
+  items,
+  parsing,
+  creating,
+  error,
+  onClose,
+  onChangeCourse,
+  onChangeText,
+  onParse,
+  onToggleInclude,
+  onChangeItem,
+  onCreate
+}: {
+  courses: Course[];
+  selectedCourseId: string | "general" | "";
+  planText: string;
+  items: AiParsedTaskDraft[];
+  parsing: boolean;
+  creating: boolean;
+  error: string | null;
+  onClose: () => void;
+  onChangeCourse: (next: string | "general" | "") => void;
+  onChangeText: (next: string) => void;
+  onParse: () => void;
+  onToggleInclude: (id: string) => void;
+  onChangeItem: (id: string, patch: Partial<AiParsedTaskDraft>) => void;
+  onCreate: () => void;
+}) {
+  const [coursePickerOpen, setCoursePickerOpen] = useState(false);
+  const includedCount = items.filter((item) => item.include).length;
+  const hasReview = items.length > 0;
+  const primaryDisabled = parsing || creating || (hasReview && includedCount === 0);
+  const primaryLabel = hasReview ? (creating ? "Launching..." : "Let's GO!") : parsing ? "Parsing..." : "Create tasks";
+  const primaryAction = hasReview ? onCreate : onParse;
+  const selectedCourse =
+    selectedCourseId === "general"
+      ? { id: "general", code: "GEN", name: "General", color: "#64748b" }
+      : courses.find((course) => course.id === selectedCourseId);
+  const accentColor = selectedCourse?.color ?? null;
+  const accentRgb = accentColor ? hexToRgb(accentColor) : null;
+  const accentRing = accentRgb ? `0 0 0 2px rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.28)` : undefined;
+  const accentSoftBg = accentRgb ? `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.14)` : undefined;
+  const accentSoftBorder = accentRgb ? `rgba(${accentRgb.r}, ${accentRgb.g}, ${accentRgb.b}, 0.42)` : undefined;
+  const selectAccentStyle: CSSProperties | undefined = accentColor
+    ? {
+        borderColor: accentSoftBorder,
+        background: accentSoftBg,
+        boxShadow: accentRing
+      }
+    : undefined;
+  const textAreaAccentStyle: CSSProperties | undefined = accentColor
+    ? {
+        borderColor: accentSoftBorder,
+        boxShadow: accentRing
+      }
+    : undefined;
+  const pickerOptions: Array<{ id: string | "general"; code: string; name: string; color: string }> = [
+    { id: "general", code: "GEN", name: "General", color: "#64748b" },
+    ...courses.map((course) => ({ id: course.id, code: course.code, name: course.name, color: course.color }))
+  ];
+  const selectedLabel = selectedCourse ? `${selectedCourse.code} · ${selectedCourse.name}` : "Choose course...";
+  return (
+    <div className="fixed inset-0 z-[56] flex items-center justify-center bg-black/45 px-4 backdrop-blur-[2px]" onClick={onClose}>
+      <Panel className="w-full max-w-3xl bg-white/95 p-6 dark:bg-[#101317]/95" onClick={(event) => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold tracking-tight">Task generator</h3>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Pick a course and paste your plan. We parse first, then you review and launch.</p>
+          </div>
+          <Button variant="ghost" onClick={onClose} className="h-10 w-10 p-0">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="grid gap-3 md:grid-cols-[240px_minmax(0,1fr)] md:items-start">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Course (required)</label>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setCoursePickerOpen((open) => !open)}
+                className="flex h-10 w-full items-center justify-between rounded-full border border-slate-300/60 bg-slate-100/65 px-3 text-sm outline-none transition hover:bg-slate-100/80 dark:border-white/15 dark:bg-white/[0.04] dark:hover:bg-white/[0.06]"
+                style={selectAccentStyle ?? undefined}
+              >
+                <span className="inline-flex min-w-0 items-center gap-2 text-left">
+                  {selectedCourse ? <span className="h-2.5 w-2.5 rounded-full" style={{ background: selectedCourse.color }} /> : null}
+                  <span className="truncate">{selectedLabel}</span>
+                </span>
+                <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition ${coursePickerOpen ? "rotate-180" : ""}`} />
+              </button>
+              {coursePickerOpen && (
+                <div className="absolute z-20 mt-2 max-h-64 w-full overflow-y-auto rounded-2xl border border-slate-200 bg-[#0d131a] p-2 shadow-xl dark:border-white/10">
+                  {pickerOptions.map((option) => {
+                    const rgb = hexToRgb(option.color);
+                    const bg = rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.18)` : "rgba(100,116,139,0.2)";
+                    const border = rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.55)` : "rgba(100,116,139,0.5)";
+                    const active = selectedCourseId === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => {
+                          onChangeCourse(option.id);
+                          setCoursePickerOpen(false);
+                        }}
+                        className={`mb-1 flex w-full items-center gap-2 rounded-full border px-3 py-1.5 text-left text-sm text-slate-100 transition hover:brightness-110 ${active ? "ring-1 ring-white/35" : ""}`}
+                        style={{ background: bg, borderColor: border }}
+                      >
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: option.color }} />
+                        <span className="truncate">{option.code} · {option.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Plan text</label>
+            <textarea
+              value={planText}
+              onChange={(event) => onChangeText(event.target.value)}
+              placeholder="Paste your plan text..."
+              className="min-h-[84px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition dark:border-white/10 dark:bg-white/[0.04]"
+              style={textAreaAccentStyle}
+            />
+          </div>
+        </div>
+        {error ? <div className="mt-3 rounded-xl border border-rose-200/70 bg-rose-50/80 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">{error}</div> : null}
+        <div className="mt-4 max-h-[45vh] space-y-2 overflow-y-auto pr-1">
+          {items.map((item) => (
+            <div key={item.id} className="rounded-xl border border-slate-200/80 p-3 dark:border-white/10">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+                  <input type="checkbox" checked={item.include} onChange={() => onToggleInclude(item.id)} className="h-4 w-4 rounded border-slate-300" />
+                  include
+                </label>
+                <select
+                  value={item.priority}
+                  onChange={(event) => onChangeItem(item.id, { priority: event.target.value as TaskPriority })}
+                  className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/[0.04]"
+                >
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="urgent">urgent</option>
+                </select>
+              </div>
+              <input
+                value={item.title}
+                onChange={(event) => onChangeItem(item.id, { title: event.target.value })}
+                className="mb-2 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/[0.04]"
+              />
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_190px]">
+                <input
+                  value={item.description}
+                  onChange={(event) => onChangeItem(item.id, { description: event.target.value })}
+                  placeholder="Description"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-white/10 dark:bg-white/[0.04]"
+                />
+                <input
+                  type="datetime-local"
+                  value={item.dueAt}
+                  onChange={(event) => onChangeItem(item.id, { dueAt: event.target.value })}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-white/10 dark:bg-white/[0.04]"
+                />
+              </div>
+              {item.phase ? <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Phase: {item.phase}</p> : null}
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-2">
+          <p className="text-xs text-slate-500 dark:text-slate-400">{includedCount} selected</p>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={onClose} disabled={creating}>Cancel</Button>
+            <Button onClick={primaryAction} disabled={primaryDisabled} className="min-w-[134px]">
+              {primaryLabel}
+            </Button>
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+}
 
 function TaskComposer({
   courses,
