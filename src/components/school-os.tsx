@@ -6204,12 +6204,13 @@ function CalendarView({
 
   useEffect(() => {
     if (!resizingSession) return;
+    const activeResize = resizingSession;
     const hourHeight = mode === "week" ? WEEK_TIMELINE_ROW_PX : dayHourHeight;
     const dayEndMinutes = (timelineHours[timelineHours.length - 1] + 1) * 60;
 
     function resolveBounds(): DOMRect | null {
       if (mode === "week") {
-        const col = document.querySelector(`[data-week-column="${resizingSession.dateKey}"]`);
+        const col = document.querySelector(`[data-week-column="${activeResize.dateKey}"]`);
         if (!(col instanceof HTMLElement)) return null;
         return col.getBoundingClientRect();
       }
@@ -6227,31 +6228,31 @@ function CalendarView({
       const bounds = resolveBounds();
       if (!bounds) return;
       const pointerMinutes = minutesFromPointer(e.clientY, bounds, hourHeight);
-      const minAllowedMinutes = getMinimumAllowedMinutesForDate(new Date(`${resizingSession.dateKey}T12:00:00`));
-      if (resizingSession.edge === "start") {
-        const clampedStart = Math.max(minAllowedMinutes, Math.min(pointerMinutes, resizingSession.endMinutes - 15));
+      const minAllowedMinutes = getMinimumAllowedMinutesForDate(new Date(`${activeResize.dateKey}T12:00:00`));
+      if (activeResize.edge === "start") {
+        const clampedStart = Math.max(minAllowedMinutes, Math.min(pointerMinutes, activeResize.endMinutes - 15));
         setSessionResizePreview({
-          courseId: resizingSession.courseId,
-          meetingId: resizingSession.meetingId,
+          courseId: activeResize.courseId,
+          meetingId: activeResize.meetingId,
           startMinutes: clampedStart,
-          endMinutes: resizingSession.endMinutes,
-          dateKey: resizingSession.dateKey
+          endMinutes: activeResize.endMinutes,
+          dateKey: activeResize.dateKey
         });
       } else {
-        const clampedEnd = Math.min(dayEndMinutes, Math.max(pointerMinutes, resizingSession.startMinutes + 15));
+        const clampedEnd = Math.min(dayEndMinutes, Math.max(pointerMinutes, activeResize.startMinutes + 15));
         setSessionResizePreview({
-          courseId: resizingSession.courseId,
-          meetingId: resizingSession.meetingId,
-          startMinutes: resizingSession.startMinutes,
+          courseId: activeResize.courseId,
+          meetingId: activeResize.meetingId,
+          startMinutes: activeResize.startMinutes,
           endMinutes: clampedEnd,
-          dateKey: resizingSession.dateKey
+          dateKey: activeResize.dateKey
         });
       }
     }
 
     function onUp() {
       const preview = sessionResizePreview;
-      if (preview && preview.courseId === resizingSession.courseId && preview.meetingId === resizingSession.meetingId) {
+      if (preview && preview.courseId === activeResize.courseId && preview.meetingId === activeResize.meetingId) {
         resizeMeetingAtMinutes(
           preview.courseId,
           preview.meetingId,
