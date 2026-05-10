@@ -164,11 +164,24 @@ function selectedClassNoteImageWidth(editor: Editor): number | null {
   return Math.max(35, Math.min(100, Math.round(raw)));
 }
 
+function clampClassNoteImageWidth(widthPercent: number): number {
+  return Math.max(35, Math.min(100, Math.round(widthPercent)));
+}
+
+function getPreferredClassNoteImageWidth(editor: Editor | null, fallbackWidth: number): number {
+  const storageWidth = Number(
+    (editor?.storage as { classNoteImage?: { lastWidthPercent?: number } } | undefined)?.classNoteImage?.lastWidthPercent
+  );
+  if (Number.isFinite(storageWidth)) return clampClassNoteImageWidth(storageWidth);
+  return clampClassNoteImageWidth(fallbackWidth);
+}
+
 export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNoteRichEditorProps>(
   function ClassNoteRichEditor({ noteId, onRegisterEmbeddedImage, body, onBodyChange, placeholder, textDir, onTextDirChange }, ref) {
     const registerImageRef = useRef(onRegisterEmbeddedImage);
     registerImageRef.current = onRegisterEmbeddedImage;
     const imageFileRef = useRef<HTMLInputElement>(null);
+    const preferredImageWidthRef = useRef(100);
 
     const extensions = useMemo(
       () => [
@@ -317,6 +330,11 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
       }
     });
 
+    useEffect(() => {
+      if (activeImageWidth === null) return;
+      preferredImageWidthRef.current = clampClassNoteImageWidth(activeImageWidth);
+    }, [activeImageWidth]);
+
     useImperativeHandle(
       ref,
       () => ({
@@ -335,11 +353,12 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
         insertClassNoteImage(attachmentId: string, alt?: string) {
           const ed = editor;
           if (!ed) return;
+          const widthPercent = getPreferredClassNoteImageWidth(ed, preferredImageWidthRef.current);
           ed.chain()
             .focus()
             .insertContent({
               type: "classNoteImage",
-              attrs: { attachmentId, alt: alt?.trim() || "Screenshot", sourceNoteId: noteId, widthPercent: 100 }
+              attrs: { attachmentId, alt: alt?.trim() || "Screenshot", sourceNoteId: noteId, widthPercent }
             })
             .run();
         },
@@ -355,8 +374,11 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
 
     useEffect(() => {
       if (!editor) return;
-      const stor = editor.storage as { classNoteImage?: { noteId: string } };
-      stor.classNoteImage!.noteId = noteId;
+      const stor = editor.storage as { classNoteImage?: { noteId?: string; lastWidthPercent?: number } };
+      const widthFromStorage = Number(stor.classNoteImage?.lastWidthPercent ?? 100);
+      const safeWidth = clampClassNoteImageWidth(widthFromStorage);
+      preferredImageWidthRef.current = safeWidth;
+      stor.classNoteImage = { ...(stor.classNoteImage ?? {}), noteId, lastWidthPercent: safeWidth };
     }, [editor, noteId]);
 
     useEffect(() => {
@@ -395,7 +417,12 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
               if (!id) return;
               const type = view.state.schema.nodes.classNoteImage;
               if (!type) return;
-              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot", sourceNoteId: noteId, widthPercent: 100 });
+              const node = type.create({
+                attachmentId: id,
+                alt: file.name || "Screenshot",
+                sourceNoteId: noteId,
+                widthPercent: getPreferredClassNoteImageWidth(editor, preferredImageWidthRef.current)
+              });
               const pos = view.state.selection.from;
               view.dispatch(view.state.tr.insert(pos, node));
             })();
@@ -413,7 +440,12 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
               if (!id) return;
               const type = view.state.schema.nodes.classNoteImage;
               if (!type) return;
-              const node = type.create({ attachmentId: id, alt: file.name || "Screenshot", sourceNoteId: noteId, widthPercent: 100 });
+              const node = type.create({
+                attachmentId: id,
+                alt: file.name || "Screenshot",
+                sourceNoteId: noteId,
+                widthPercent: getPreferredClassNoteImageWidth(editor, preferredImageWidthRef.current)
+              });
               const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
               const pos = coords ? coords.pos : view.state.selection.from;
               view.dispatch(view.state.tr.insert(pos, node));
@@ -449,11 +481,12 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
         if (!isClassNoteImageFile(file) || file.size > CLASS_NOTE_IMAGE_MAX_BYTES) return;
         const id = await registerImageRef.current?.(file);
         if (!id) return;
+        const widthPercent = getPreferredClassNoteImageWidth(ed, preferredImageWidthRef.current);
         ed.chain()
           .focus()
           .insertContent({
             type: "classNoteImage",
-            attrs: { attachmentId: id, alt: file.name || "Screenshot", sourceNoteId: noteId, widthPercent: 100 }
+            attrs: { attachmentId: id, alt: file.name || "Screenshot", sourceNoteId: noteId, widthPercent }
           })
           .run();
       },
@@ -463,7 +496,10 @@ export const ClassNoteRichEditor = forwardRef<ClassNoteRichEditorHandle, ClassNo
     const setSelectedImageWidth = useCallback(
       (widthPercent: number) => {
         if (!editor) return;
-        const width = Math.max(35, Math.min(100, Math.round(widthPercent)));
+        const width = clampClassNoteImageWidth(widthPercent);
+        preferredImageWidthRef.current = width;
+        const stor = editor.storage as { classNoteImage?: { noteId?: string; lastWidthPercent?: number } };
+        stor.classNoteImage = { ...(stor.classNoteImage ?? {}), lastWidthPercent: width };
         editor.chain().focus().updateAttributes("classNoteImage", { widthPercent: width }).run();
       },
       [editor]

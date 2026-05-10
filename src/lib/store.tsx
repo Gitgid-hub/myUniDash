@@ -50,6 +50,8 @@ interface CourseInput {
   color: string;
   instructor?: string;
   notes?: string;
+  /** Panopto “Sessions list” URL for this course; weekly catch-up and task details use it when set. */
+  panoptoFolderUrl?: string;
   meetings?: Course["meetings"];
   progressMode?: "manual" | "computed";
   manualProgress?: number;
@@ -327,6 +329,7 @@ function reducer(state: SchoolState, action: Action): SchoolState {
       return { ...state, tasks: state.tasks.filter((task) => task.id !== action.payload) };
     case "add-course": {
       const now = nowIso();
+      const trimmedPanopto = action.payload.panoptoFolderUrl?.trim();
       const newCourse: Course = {
         id: action.payload.id ?? createId("course"),
         name: action.payload.name,
@@ -338,6 +341,7 @@ function reducer(state: SchoolState, action: Action): SchoolState {
         archived: false,
         instructor: action.payload.instructor,
         notes: action.payload.notes ?? "",
+        ...(trimmedPanopto ? { panoptoFolderUrl: trimmedPanopto } : {}),
         meetings: (action.payload.meetings ?? []).map((meeting) => ({
           ...meeting,
           id: meeting.id ?? createId("meeting"),

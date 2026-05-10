@@ -10,7 +10,7 @@ export const ClassNoteImage = Node.create({
   draggable: true,
 
   addStorage() {
-    return { noteId: "" };
+    return { noteId: "", lastWidthPercent: 100 };
   },
 
   addAttributes() {
@@ -129,6 +129,7 @@ export const ClassNoteImage = Node.create({
         const current = editor.state.doc.nodeAt(pos);
         if (!current || current.type.name !== "classNoteImage") return;
         const safe = Math.max(35, Math.min(100, Math.round(widthPercent)));
+        editor.storage.classNoteImage.lastWidthPercent = safe;
         const prev = Number(current.attrs.widthPercent);
         if (Number.isFinite(prev) && Math.round(prev) === safe) return;
         const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
@@ -222,6 +223,7 @@ export const ClassNoteImage = Node.create({
       const applyWidth = (raw: unknown) => {
         const width = Number(raw);
         const safe = Number.isFinite(width) ? Math.max(35, Math.min(100, Math.round(width))) : 100;
+        editor.storage.classNoteImage.lastWidthPercent = safe;
         figure.style.width = `${safe}%`;
         figure.style.maxWidth = "100%";
       };

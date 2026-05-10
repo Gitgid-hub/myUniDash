@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { ExternalLink, FileText, Image as ImageIcon, Paperclip, Plus, Presentation, Sparkles, Trash2, Upload, X } from "lucide-react";
+import { BookOpen, ExternalLink, FileText, Image as ImageIcon, Paperclip, Plus, Presentation, Sparkles, Trash2, Upload, X } from "lucide-react";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, MouseEvent } from "react";
 import ReactMarkdown from "react-markdown";
@@ -1103,6 +1103,8 @@ export type ClassNotesPanelProps = {
   onUpdateNote: (payload: Partial<ClassNote> & { id: string }) => void;
   onDeleteNote: (id: string) => void;
   onPublishNote: (id: string) => void;
+  /** Open the School OS Guide for this tab (shortcuts). */
+  onOpenTabGuide?: () => void;
 };
 
 function ClassNotesPanelInner({
@@ -1113,7 +1115,8 @@ function ClassNotesPanelInner({
   onCreateNote,
   onUpdateNote,
   onDeleteNote,
-  onPublishNote
+  onPublishNote,
+  onOpenTabGuide
 }: ClassNotesPanelProps) {
   const [editorTab, setEditorTab] = useState<"write" | "preview">("write");
   const activeCourses = useMemo(() => courses.filter((c) => !c.archived), [courses]);
@@ -1217,10 +1220,24 @@ function ClassNotesPanelInner({
 
       {!openNote ? (
         <div className="space-y-6">
-          <p className="max-w-2xl text-sm text-slate-500 dark:text-slate-400">
-            Lecture summaries grouped by course. Open a session from the calendar to start a dated draft, or use + on a course
-            for a quick manual entry.
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <p className="max-w-2xl min-w-[200px] flex-1 text-sm text-slate-500 dark:text-slate-400">
+              Lecture summaries grouped by course. Open a session from the calendar to start a dated draft, or use + on a course
+              for a quick manual entry.
+            </p>
+            {onOpenTabGuide ? (
+              <Button
+                variant="outline"
+                type="button"
+                onClick={onOpenTabGuide}
+                className="h-9 shrink-0 px-3 text-xs"
+                data-onboarding="guide-button"
+              >
+                <BookOpen className="mr-1 h-3.5 w-3.5" />
+                Guide
+              </Button>
+            ) : null}
+          </div>
 
           <div className="max-w-3xl space-y-4">
             {activeCourses.length === 0 ? (

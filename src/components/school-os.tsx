@@ -40,6 +40,7 @@ import {
   Trash2,
   TriangleAlert,
   Upload,
+  Video,
   X
 } from "lucide-react";
 import { ClassNotesPanel, defaultClassNoteTitle } from "@/components/class-notes-panel";
@@ -80,6 +81,7 @@ import type {
   WeekDay,
   WorkBlock
 } from "@/lib/types";
+import { getTabGuideSheet } from "@/lib/view-tab-guide";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { sortCompletedTasksByCompletedAtDesc, sortTasksByDueThenPriority } from "@/lib/kanban-sort";
 import { Badge, Button, Panel } from "@/components/ui";
@@ -119,7 +121,8 @@ import { WeeklyCatchUpModal } from "@/components/weekly-catch-up-modal";
 import { CalendarSyncModal } from "@/components/calendar-sync-modal";
 import { getDemoWeeklyCatchupVirtualNow } from "@/lib/demo-weekly-catchup";
 import { isAdminEmail } from "@/lib/admin-emails";
-import { resolvePanoptoFolderUrl } from "@/lib/panopto-folder-url";
+import { PanoptoFolderPromptModal } from "@/components/panopto-folder-prompt-modal";
+import { resolvePanoptoFolderUrl, shouldOfferPanoptoFolderPastePrompt } from "@/lib/panopto-folder-url";
 import type { WorkspaceUserRow } from "@/lib/workspace-user-admin";
 import type { EarlyAccessRequestRow } from "@/lib/early-access-types";
 
@@ -145,10 +148,6 @@ const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
 const USER_REQUESTS_SEEN_WATERMARK_KEY = "school-os:user-requests-seen-watermark:v1";
 const KANBAN_BOARD_LAYOUT_STORAGE_KEY = "school-os:kanban-board-layout:v1";
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
-const RELEASE_ANNOUNCEMENT_SEEN_KEY = "school-os:release-announcement-seen:v1";
-const RELEASE_ANNOUNCEMENT_VERSION = "2026-05-05-class-notes-images-v2";
-const TASK_GENERATOR_UPDATE_SEEN_KEY = "school-os:task-generator-update-seen:v1";
-const TASK_GENERATOR_UPDATE_VERSION = "2026-05-07-task-generator-v5";
 const UNRELATED_SESSIONS_COURSE_ID = "course-unrelated-sessions";
 type CatalogDegreeOption = {
   id: string;
@@ -645,19 +644,19 @@ export function SchoolOS() {
   const [newCourseName, setNewCourseName] = useState("");
   const [newCourseCode, setNewCourseCode] = useState("");
   const [newCourseColor, setNewCourseColor] = useState(coursePalette[0]);
+  /** After catalog session-picker completes, show Panopto paste prompt for this course. */
+  const pendingPanoptoAfterSessionChoiceRef = useRef<{ courseId: string; courseName: string } | null>(null);
+  const [panoptoFolderPrompt, setPanoptoFolderPrompt] = useState<{ courseId: string; courseName: string } | null>(null);
   const [editName, setEditName] = useState("");
   const [editCode, setEditCode] = useState("");
   const [editInstructor, setEditInstructor] = useState("");
   const [editNotes, setEditNotes] = useState("");
-  const [editProgressMode, setEditProgressMode] = useState<"manual" | "computed">("manual");
-  const [editManualProgress, setEditManualProgress] = useState(0);
+  const [editPanoptoFolderUrl, setEditPanoptoFolderUrl] = useState("");
   const [editColor, setEditColor] = useState(coursePalette[0]);
   const [isUtilityOpen, setIsUtilityOpen] = useState(false);
+  /** Which main tab the Guide drawer was opened for (shortcuts text). */
+  const [tabGuideFor, setTabGuideFor] = useState<MainView>("dashboard");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [releaseAnnouncementOpen, setReleaseAnnouncementOpen] = useState(false);
-  const releaseAnnouncementTitleRef = useRef<HTMLHeadingElement | null>(null);
-  const [taskGeneratorUpdateOpen, setTaskGeneratorUpdateOpen] = useState(false);
-  const [taskGeneratorNudgeActive, setTaskGeneratorNudgeActive] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [featureRequestMessage, setFeatureRequestMessage] = useState("");
   const [featureRequestShots, setFeatureRequestShots] = useState<Array<{ name: string; mimeType: string; dataUrl: string }>>([]);
@@ -927,6 +926,31 @@ export function SchoolOS() {
       }
     }, 160);
   }, []);
+
+  const openTabGuide = useCallback(
+    (view?: MainView) => {
+      setTabGuideFor(view ?? state.ui.activeView);
+      setIsUtilityOpen(true);
+    },
+    [state.ui.activeView]
+  );
+
+  const schedulePanoptoFolderPrompt = useCallback((courseId: string, courseName: string, code: string) => {
+    if (!shouldOfferPanoptoFolderPastePrompt({ code, name: courseName, panoptoFolderUrl: undefined })) return;
+    window.setTimeout(() => {
+      setPanoptoFolderPrompt({ courseId, courseName });
+    }, 0);
+  }, []);
+
+  const openCourseEditorForPanopto = useCallback((courseId: string) => {
+    dispatch({ type: "set-course-filter", payload: courseId });
+    setIsCourseEditorOpen(true);
+    window.setTimeout(() => {
+      const el = document.getElementById("course-panopto-folder-url");
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (el instanceof HTMLInputElement) el.focus();
+    }, 180);
+  }, [dispatch]);
 
   useKeyboardShortcuts({
     openSearch: () => dispatch({ type: "set-search", payload: true }),
@@ -1379,62 +1403,6 @@ export function SchoolOS() {
   }, [doneFeatureRequestMap]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const seenVersion = window.localStorage.getItem(RELEASE_ANNOUNCEMENT_SEEN_KEY);
-    if (seenVersion === RELEASE_ANNOUNCEMENT_VERSION) return;
-    setReleaseAnnouncementOpen(true);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const seenVersion = window.localStorage.getItem(TASK_GENERATOR_UPDATE_SEEN_KEY);
-    if (seenVersion === TASK_GENERATOR_UPDATE_VERSION) return;
-    dispatch({ type: "set-view", payload: "kanban" });
-    setTaskGeneratorNudgeActive(true);
-    setTaskGeneratorUpdateOpen(true);
-  }, [dispatch]);
-
-  useEffect(() => {
-    if (!taskGeneratorUpdateOpen) return;
-    if (state.ui.activeView === "kanban") return;
-    dispatch({ type: "set-view", payload: "kanban" });
-  }, [dispatch, state.ui.activeView, taskGeneratorUpdateOpen]);
-
-  useEffect(() => {
-    if (!releaseAnnouncementOpen) return;
-    const titleEl = releaseAnnouncementTitleRef.current;
-    if (!titleEl) return;
-    const style = window.getComputedStyle(titleEl);
-    const parent = titleEl.parentElement;
-    const parentStyle = parent ? window.getComputedStyle(parent) : null;
-    // #region agent log
-    fetch("http://127.0.0.1:7905/ingest/50ad504e-2222-4899-bcc0-f4e8306257b9", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "6953ba" },
-      body: JSON.stringify({
-        sessionId: "6953ba",
-        runId: "popup-rtl-1",
-        hypothesisId: "H1",
-        location: "school-os.tsx:releaseAnnouncementTitleEffect",
-        message: "Popup title computed bidi styles",
-        data: {
-          titleDirAttr: titleEl.getAttribute("dir"),
-          titleText: titleEl.innerText,
-          titleHtml: titleEl.innerHTML,
-          titleDirection: style.direction,
-          titleTextAlign: style.textAlign,
-          titleUnicodeBidi: style.unicodeBidi,
-          parentDirAttr: parent?.getAttribute("dir") ?? null,
-          parentDirection: parentStyle?.direction ?? null,
-          parentTextAlign: parentStyle?.textAlign ?? null
-        },
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-    // #endregion
-  }, [releaseAnnouncementOpen]);
-
-  useEffect(() => {
     if (!isAdmin || typeof window === "undefined") return;
     const raw = window.localStorage.getItem(USER_REQUESTS_SEEN_WATERMARK_KEY);
     if (raw) {
@@ -1686,8 +1654,7 @@ export function SchoolOS() {
     setEditCode(selectedCourse.code);
     setEditInstructor(selectedCourse.instructor ?? "");
     setEditNotes(selectedCourse.notes ?? "");
-    setEditProgressMode(selectedCourse.progressMode);
-    setEditManualProgress(selectedCourse.manualProgress);
+    setEditPanoptoFolderUrl(selectedCourse.panoptoFolderUrl ?? "");
     setEditColor(selectedCourse.color);
   }, [selectedCourse]);
 
@@ -1705,6 +1672,9 @@ export function SchoolOS() {
     }
     if (typeof onboardingStep.ensureUtilityOpen === "boolean") {
       setIsUtilityOpen(onboardingStep.ensureUtilityOpen);
+      if (onboardingStep.ensureUtilityOpen) {
+        setTabGuideFor(state.ui.activeView);
+      }
     }
     setIsSettingsOpen(onboardingStep.ensureSettingsOpen === true);
     setIsCatalogPickerOpen(onboardingStep.ensureCatalogPickerOpen === true);
@@ -1755,6 +1725,8 @@ export function SchoolOS() {
         return [...base].sort(taskComparator);
     }
   }, [state.tasks, state.ui.activeView, state.ui.selectedCourseId]);
+
+  const utilityGuideSheet = useMemo(() => getTabGuideSheet(tabGuideFor), [tabGuideFor]);
 
   // Old saved states may still point to removed sidebar tabs.
   useEffect(() => {
@@ -2080,7 +2052,6 @@ export function SchoolOS() {
   }, [dispatch]);
   const handleOpenAiTaskImport = useCallback(
     () => {
-      setTaskGeneratorNudgeActive(false);
       setAiTaskImportOpen(true);
       setAiTaskImportError(null);
       setAiTaskImportItems([]);
@@ -2379,17 +2350,19 @@ export function SchoolOS() {
           return true;
         });
         if (dedupeBlocked) continue;
+        /** Occurrences snapshot `occ.course` can be stale after Edit course (e.g. new Panopto URL); always read live course. */
+        const courseLive = activeCourses.find((c) => c.id === occ.course.id) ?? occ.course;
         const sessionLabel = occ.meeting.title?.trim() || formatSessionType(occ.meeting.type);
         const dateStr = formatDateKey(occ.date);
-        const courseName = occ.course.name?.trim();
+        const courseName = courseLive.name?.trim();
         const coursePart =
-          courseName && courseName !== occ.course.code.trim() ? `${courseName} (${occ.course.code})` : occ.course.code;
+          courseName && courseName !== courseLive.code.trim() ? `${courseName} (${courseLive.code})` : courseLive.code;
         const dueAt = findRecordingCatchUpDueAt(activeCourses, occ);
         const baseDescription = `Catch up for ${coursePart} on ${dateStr} ${occ.meeting.start}–${occ.meeting.end}`;
         const deadlineNote = dueAt
           ? ` Due before your next lecture/tutorial in this course (${new Date(dueAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}).`
           : " No later lecture/tutorial found on your calendar in the next year — add a due date manually if you want one.";
-        const panoptoFolder = resolvePanoptoFolderUrl(occ.course);
+        const panoptoFolder = resolvePanoptoFolderUrl(courseLive);
         const panoptoNote = panoptoFolder ? `\n\nPanopto (course folder): ${panoptoFolder}` : "";
         const taskId = createId("task");
         const tags = isDemo
@@ -2399,7 +2372,7 @@ export function SchoolOS() {
           id: taskId,
           title: `Watch recording: ${coursePart} — ${sessionLabel}`,
           description: `${baseDescription}.${deadlineNote}${panoptoNote}`,
-          courseId: occ.course.id,
+          courseId: courseLive.id,
           status: "backlog",
           dueAt,
           tags
@@ -2710,6 +2683,7 @@ export function SchoolOS() {
     setNewCourseColor(coursePalette[0]);
     setIsAddCourseOpen(false);
     setIsCourseActionsOpen(false);
+    schedulePanoptoFolderPrompt(newCourseId, trimmedName, normalizedCode);
   };
 
   const runCatalogSearch = useCallback(async (query: string) => {
@@ -2834,6 +2808,7 @@ export function SchoolOS() {
       });
       setFreshlyAddedCourseId(newCourseId);
       setVisibleCourseIds((current) => (current.includes(newCourseId) ? current : [...current, newCourseId]));
+      let openedSessionPicker = false;
       if (meetingChoices.length > 0) {
         const mappedChoiceSets = meetingChoices
           .filter((set) => (set.options ?? []).length > 1)
@@ -2860,16 +2835,29 @@ export function SchoolOS() {
           .filter((set) => set.options.some((option) => option.meetings.length > 0))
           .sort((a, b) => getImportedChoiceSetPriority(a.label) - getImportedChoiceSetPriority(b.label));
         if (mappedChoiceSets.length > 0) {
+          openedSessionPicker = true;
           setPendingSessionChoiceFlow({
-          courseId: newCourseId,
-          courseName: dedupedImportedTitle,
-          courseColor: selectedColor,
-          activeSetIndex: 0,
-          sets: mappedChoiceSets
+            courseId: newCourseId,
+            courseName: dedupedImportedTitle,
+            courseColor: selectedColor,
+            activeSetIndex: 0,
+            sets: mappedChoiceSets
           });
           dispatch({ type: "set-view", payload: "calendar" });
           setCalendarMode("week");
+          if (
+            shouldOfferPanoptoFolderPastePrompt({
+              code: imported.courseNumber,
+              name: dedupedImportedTitle,
+              panoptoFolderUrl: undefined
+            })
+          ) {
+            pendingPanoptoAfterSessionChoiceRef.current = { courseId: newCourseId, courseName: dedupedImportedTitle };
+          }
         }
+      }
+      if (!openedSessionPicker) {
+        schedulePanoptoFolderPrompt(newCourseId, dedupedImportedTitle, imported.courseNumber);
       }
       setIsCatalogPickerOpen(false);
       setIsSettingsOpen(false);
@@ -2880,7 +2868,7 @@ export function SchoolOS() {
     } finally {
       setCatalogImportingId(null);
     }
-  }, [addCourse, dispatch, getAuthHeader, state.courses]);
+  }, [addCourse, dispatch, getAuthHeader, schedulePanoptoFolderPrompt, state.courses]);
 
   const loadDegreeRoadmapCourses = useCallback(
     async (degreeId: string, showToast = true, openCatalogPicker = true): Promise<boolean> => {
@@ -3056,7 +3044,13 @@ export function SchoolOS() {
       }
     });
     if (pendingSessionChoiceFlow.activeSetIndex >= pendingSessionChoiceFlow.sets.length - 1) {
+      const flow = pendingSessionChoiceFlow;
+      const pendingPan = pendingPanoptoAfterSessionChoiceRef.current;
       setPendingSessionChoiceFlow(null);
+      if (pendingPan && pendingPan.courseId === flow.courseId) {
+        pendingPanoptoAfterSessionChoiceRef.current = null;
+        schedulePanoptoFolderPrompt(pendingPan.courseId, pendingPan.courseName, course.code);
+      }
       pushSchoolOsToast({
         kind: "success",
         message: "Session choice saved. Other options were removed."
@@ -3066,7 +3060,7 @@ export function SchoolOS() {
     setPendingSessionChoiceFlow((current) => current
       ? { ...current, activeSetIndex: current.activeSetIndex + 1 }
       : current);
-  }, [dispatch, pendingSessionChoiceFlow, state.courses]);
+  }, [dispatch, pendingSessionChoiceFlow, schedulePanoptoFolderPrompt, state.courses]);
 
   if (!ready) {
     return (
@@ -3191,10 +3185,12 @@ export function SchoolOS() {
                       K
                     </span>
                   </button>
-                  <Button variant="outline" onClick={() => setIsUtilityOpen(true)} data-onboarding="guide-button">
-                    <BookOpen className="mr-1 h-4 w-4" />
-                    Guide
-                  </Button>
+                  {state.ui.activeView !== "kanban" && state.ui.activeView !== "class-notes" ? (
+                    <Button variant="outline" onClick={() => openTabGuide()} data-onboarding="guide-button">
+                      <BookOpen className="mr-1 h-4 w-4" />
+                      Guide
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             </Panel>
@@ -3266,7 +3262,7 @@ export function SchoolOS() {
                 onToggleDone={handleKanbanToggleDone}
                 onOpenComposer={handleOpenComposer}
                 onOpenAiImport={handleOpenAiTaskImport}
-                highlightTaskGenerator={taskGeneratorNudgeActive}
+                onOpenTabGuide={() => openTabGuide("kanban")}
                 glowTaskIds={catchUpGlowTaskIds}
               />
             </div>
@@ -3305,6 +3301,7 @@ export function SchoolOS() {
               newlyAddedCourseId={onboardingCourseGlowId}
               onOpenWeeklyCatchUp={handleWeeklyCatchUpRequestFromCalendar}
               onAppleCalendarSync={handleOpenCalendarSync}
+              onOpenTabGuide={() => openTabGuide("calendar")}
               catchUpOwnerToolbar={
                 isAdmin ? (
                   <Button
@@ -3421,6 +3418,18 @@ export function SchoolOS() {
                         </div>
                       </button>
                       <div className={`flex items-center gap-1 transition ${isActive ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                        <button
+                          type="button"
+                          aria-label="Panopto recordings link"
+                          title="Set Panopto folder URL (weekly catch-up uses this)"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openCourseEditorForPanopto(course.id);
+                          }}
+                          className="rounded-md p-1.5 text-slate-500 transition hover:bg-sky-100/80 hover:text-sky-700 dark:text-slate-400 dark:hover:bg-sky-500/15 dark:hover:text-sky-200"
+                        >
+                          <Video className="h-3.5 w-3.5" />
+                        </button>
                         {courseListMode === "archived" ? (
                           <button
                             type="button"
@@ -3595,6 +3604,7 @@ export function SchoolOS() {
                 onUpdateNote={(payload) => dispatch({ type: "update-class-note", payload })}
                 onDeleteNote={(id) => dispatch({ type: "delete-class-note", payload: id })}
                 onPublishNote={(id) => dispatch({ type: "publish-class-note", payload: id })}
+                onOpenTabGuide={() => openTabGuide("class-notes")}
               />
             </div>
           )}
@@ -3623,8 +3633,8 @@ export function SchoolOS() {
           <aside className="absolute inset-y-4 right-4 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-4 overflow-y-auto rounded-[32px] border border-slate-200/80 bg-[#f7f8fa]/96 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.16)] backdrop-blur-2xl dark:border-white/10 dark:bg-[#0f1115]/96 dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]">
             <div className="flex items-center justify-between px-1">
               <div>
-                <h3 className="text-lg font-semibold tracking-tight">Guide</h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400">Shortcuts and onboarding in one place.</p>
+                <h3 className="text-lg font-semibold tracking-tight">Guide — {utilityGuideSheet.viewLabel}</h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400">This tab, then global keys.</p>
               </div>
               <Button variant="ghost" onClick={() => setIsUtilityOpen(false)} className="h-10 w-10 p-0">
                 <X className="h-4 w-4" />
@@ -3632,27 +3642,23 @@ export function SchoolOS() {
             </div>
 
             <Panel className="bg-white/92 dark:bg-[#101317]/92">
-              <h3 className="mb-2 font-semibold">Keyboard</h3>
-              <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
-                <li>
-                  <span className="font-medium text-slate-600 dark:text-slate-300">N</span> or Hebrew{" "}
-                  <span className="font-medium text-slate-600 dark:text-slate-300">מ</span> on the{" "}
-                  <strong>Kanban</strong> board — open <strong>New Task</strong> (not while typing in a field or with search open).
-                </li>
-                <li>
-                  Same keys on <strong>Calendar</strong> or <strong>Class Notes</strong> with a <strong>selected calendar session</strong>{" "}
-                  — new class note for that session (not the task composer).
-                </li>
-                <li>
-                  <span className="font-medium text-slate-600 dark:text-slate-300">⌘⇧U</span> /{" "}
-                  <span className="font-medium text-slate-600 dark:text-slate-300">Ctrl+Shift+U</span> — open the{" "}
-                  <strong>feedback & bugs</strong> box in Settings (fast path for QR helpers).
-                </li>
-                <li>`Cmd/Ctrl + K` or `/` — search (tasks, courses, notes, navigation)</li>
-                <li>`X` mark focused task done</li>
-                <li>`1`-`7` switch views without ⌘/Ctrl — same order as the sidebar (⌘+digit is left to the browser for tabs)</li>
-              </ul>
-              <div className="mt-3 border-t border-slate-200/80 pt-3 dark:border-white/10">
+              <div className="space-y-4">
+                {utilityGuideSheet.sections.map((section) => (
+                  <div key={section.title}>
+                    <h4 className="mb-2 text-sm font-semibold text-slate-800 dark:text-slate-100">{section.title}</h4>
+                    <ul className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                      {section.items.map((item, idx) => (
+                        <li key={`${section.title}-${idx}`}>
+                          <span className="font-medium text-slate-800 dark:text-slate-100">{item.keys}</span>
+                          <span className="text-slate-500 dark:text-slate-400"> — </span>
+                          {item.detail}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 border-t border-slate-200/80 pt-3 dark:border-white/10">
                 <Button
                   variant="outline"
                   className="w-full justify-center"
@@ -4341,10 +4347,8 @@ export function SchoolOS() {
           setEditInstructor={setEditInstructor}
           editNotes={editNotes}
           setEditNotes={setEditNotes}
-          editProgressMode={editProgressMode}
-          setEditProgressMode={setEditProgressMode}
-          editManualProgress={editManualProgress}
-          setEditManualProgress={setEditManualProgress}
+          editPanoptoFolderUrl={editPanoptoFolderUrl}
+          setEditPanoptoFolderUrl={setEditPanoptoFolderUrl}
           editColor={editColor}
           setEditColor={setEditColor}
           onClose={() => setIsCourseEditorOpen(false)}
@@ -4357,8 +4361,9 @@ export function SchoolOS() {
                 code: editCode.trim() || editName.trim() || selectedCourse.code,
                 instructor: editInstructor.trim(),
                 notes: editNotes,
-                progressMode: editProgressMode,
-                manualProgress: Math.max(0, Math.min(100, editManualProgress)),
+                panoptoFolderUrl: editPanoptoFolderUrl.trim() || undefined,
+                progressMode: selectedCourse.progressMode,
+                manualProgress: selectedCourse.manualProgress,
                 color: editColor
               }
             });
@@ -4498,85 +4503,6 @@ export function SchoolOS() {
           onCreate={() => void handleCreateAiImportedTasks()}
         />
       )}
-      {taskGeneratorUpdateOpen && (
-        <div className="fixed inset-0 z-[57] flex items-center justify-center bg-black/28 p-4">
-          <Panel className="w-full max-w-lg rounded-[24px] bg-white/95 p-6 dark:bg-[#101317]/95">
-            <h3 className="text-lg font-semibold tracking-tight">New update: Task generator</h3>
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-              Paste a plan and auto-generate tasks with deadlines. You are now on Kanban, and the Task generator entry is
-              highlighted so you can try it quickly.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  if (typeof window !== "undefined") {
-                    window.localStorage.setItem(TASK_GENERATOR_UPDATE_SEEN_KEY, TASK_GENERATOR_UPDATE_VERSION);
-                  }
-                  setTaskGeneratorNudgeActive(false);
-                  setTaskGeneratorUpdateOpen(false);
-                }}
-              >
-                Later
-              </Button>
-              <Button
-                onClick={() => {
-                  if (typeof window !== "undefined") {
-                    window.localStorage.setItem(TASK_GENERATOR_UPDATE_SEEN_KEY, TASK_GENERATOR_UPDATE_VERSION);
-                  }
-                  dispatch({ type: "set-view", payload: "kanban" });
-                  setTaskGeneratorUpdateOpen(false);
-                  handleOpenAiTaskImport();
-                }}
-              >
-                Try it now
-              </Button>
-            </div>
-          </Panel>
-        </div>
-      )}
-      {releaseAnnouncementOpen && (
-        <div className="fixed inset-0 z-[56] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
-          <Panel className="w-full max-w-xl rounded-[28px] bg-white/95 p-6 dark:bg-[#101317]/95">
-            <div className="flex items-start justify-end">
-              <div dir="rtl" className="w-full text-right">
-                <h3 ref={releaseAnnouncementTitleRef} className="text-lg font-semibold tracking-tight">
-                  <bdi dir="rtl">אח יקר, יש עדכון!</bdi>
-                  <span className="mx-1" aria-hidden />
-                  <bdi dir="ltr" aria-hidden>
-                    🔥
-                  </bdi>
-                </h3>
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                  שיפרתי את מערכת סיכומי השיעור בכמה נקודות חשובות:
-                </p>
-              </div>
-            </div>
-            <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-slate-700 dark:text-slate-200" dir="rtl">
-              <li>
-                מעכשיו אפשר להוסיף צילומי מסך (למשל סליידים מתוך מצגת) ישירות לתוך הסיכום, כולל שינוי גודל פרופורציונלי
-                מהפינות.
-              </li>
-              <li>
-                בעמוד סיכומי השיעורים, הקורס שבו יצרת או עדכנת סיכום לאחרונה יופיע ראשון ברשימה.
-              </li>
-              <li>אם יצאת וחזרת לפני שסיימת לעבוד, יהיה לך קל יותר להמשיך בדיוק מאיפה שעצרת.</li>
-            </ul>
-            <div className="mt-5 flex justify-end">
-              <Button
-                onClick={() => {
-                  if (typeof window !== "undefined") {
-                    window.localStorage.setItem(RELEASE_ANNOUNCEMENT_SEEN_KEY, RELEASE_ANNOUNCEMENT_VERSION);
-                  }
-                  setReleaseAnnouncementOpen(false);
-                }}
-              >
-                הבנתי, תודה
-              </Button>
-            </div>
-          </Panel>
-        </div>
-      )}
       <WeeklyCatchUpModal
         open={weeklyCatchUpOpen}
         weekLabel={weeklyCatchUpWeekLabel}
@@ -4591,6 +4517,19 @@ export function SchoolOS() {
         }}
         onGenerate={handleWeeklyCatchUpGenerate}
         onGoToTasks={handleWeeklyCatchUpGoToTasks}
+      />
+      <PanoptoFolderPromptModal
+        open={panoptoFolderPrompt !== null}
+        courseName={panoptoFolderPrompt?.courseName ?? ""}
+        onAddLater={() => setPanoptoFolderPrompt(null)}
+        onSave={(url) => {
+          if (!panoptoFolderPrompt) return;
+          dispatch({
+            type: "update-course",
+            payload: { id: panoptoFolderPrompt.courseId, panoptoFolderUrl: url.trim() }
+          });
+          setPanoptoFolderPrompt(null);
+        }}
       />
       <CalendarSyncModal
         open={calendarSyncModalOpen}
@@ -4633,7 +4572,7 @@ export function SchoolOS() {
               if (result.id === "user-requests-tab" && isAdmin) {
                 dispatch({ type: "set-view", payload: "user-requests" });
               } else if (result.id === "cmd-open-guide") {
-                setIsUtilityOpen(true);
+                openTabGuide();
               } else if (result.id === "cmd-calendar-week") {
                 dispatch({ type: "set-view", payload: "calendar" });
                 setCalendarMode("week");
@@ -4869,7 +4808,7 @@ function KanbanView({
   onToggleDone,
   onOpenComposer,
   onOpenAiImport,
-  highlightTaskGenerator,
+  onOpenTabGuide,
   glowTaskIds
 }: {
   tasks: Task[];
@@ -4889,7 +4828,7 @@ function KanbanView({
   onToggleDone: (id: string) => void;
   onOpenComposer: (courseId?: string | "general") => void;
   onOpenAiImport: (courseId?: string | "general") => void;
-  highlightTaskGenerator?: boolean;
+  onOpenTabGuide?: () => void;
   /** Tasks to highlight with a soft animated glow (one-shot, view-scoped). */
   glowTaskIds?: string[];
 }) {
@@ -5165,11 +5104,13 @@ function KanbanView({
             </div>
           </div>
           <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={() => onOpenAiImport()}
-              className={`h-8 px-3 text-xs ${highlightTaskGenerator ? "ring-2 ring-sky-400/85 shadow-[0_0_22px_rgba(56,189,248,0.45)] animate-pulse" : ""}`}
-            >
+            {onOpenTabGuide ? (
+              <Button variant="outline" onClick={onOpenTabGuide} className="h-8 px-3 text-xs" data-onboarding="guide-button">
+                <BookOpen className="mr-1 h-3.5 w-3.5" />
+                Guide
+              </Button>
+            ) : null}
+            <Button variant="outline" onClick={() => onOpenAiImport()} className="h-8 px-3 text-xs">
               Task generator
             </Button>
             {tab === "completed" && (
@@ -5368,6 +5309,7 @@ function CalendarView({
   newlyAddedCourseId,
   onOpenWeeklyCatchUp,
   onAppleCalendarSync,
+  onOpenTabGuide,
   catchUpOwnerToolbar
 }: {
   tasks: Task[];
@@ -5418,6 +5360,8 @@ function CalendarView({
   onOpenWeeklyCatchUp?: (weekAnchorDate: Date) => void;
   /** Apple Calendar / .ics: subscription URL when signed in, or one-time download. */
   onAppleCalendarSync?: () => void;
+  /** Open the per-tab Guide drawer for Calendar shortcuts. */
+  onOpenTabGuide?: () => void;
   /** Optional extra controls next to “Weekly catch-up” (e.g. owner demo / reset). */
   catchUpOwnerToolbar?: ReactNode;
 }) {
@@ -6445,6 +6389,18 @@ function CalendarView({
                   Sync
                 </Button>
               ) : null}
+              {onOpenTabGuide ? (
+                <Button
+                  variant="outline"
+                  className="h-8 shrink-0 text-xs"
+                  type="button"
+                  onClick={onOpenTabGuide}
+                  data-onboarding="guide-button"
+                >
+                  <BookOpen className="mr-1 h-3.5 w-3.5" />
+                  Guide
+                </Button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -7063,6 +7019,18 @@ function CalendarView({
             >
               <CalendarPlus className="mr-1 h-3.5 w-3.5" />
               Sync
+            </Button>
+          ) : null}
+          {onOpenTabGuide ? (
+            <Button
+              variant="outline"
+              className="h-8 shrink-0 text-xs"
+              type="button"
+              onClick={onOpenTabGuide}
+              data-onboarding="guide-button"
+            >
+              <BookOpen className="mr-1 h-3.5 w-3.5" />
+              Guide
             </Button>
           ) : null}
           </div>
@@ -9139,10 +9107,8 @@ function CourseEditorModal({
   setEditInstructor,
   editNotes,
   setEditNotes,
-  editProgressMode,
-  setEditProgressMode,
-  editManualProgress,
-  setEditManualProgress,
+  editPanoptoFolderUrl,
+  setEditPanoptoFolderUrl,
   editColor,
   setEditColor,
   onClose,
@@ -9160,10 +9126,8 @@ function CourseEditorModal({
   setEditInstructor: (value: string) => void;
   editNotes: string;
   setEditNotes: (value: string) => void;
-  editProgressMode: "manual" | "computed";
-  setEditProgressMode: (value: "manual" | "computed") => void;
-  editManualProgress: number;
-  setEditManualProgress: (value: number) => void;
+  editPanoptoFolderUrl: string;
+  setEditPanoptoFolderUrl: (value: string) => void;
   editColor: string;
   setEditColor: (value: string) => void;
   onClose: () => void;
@@ -9207,18 +9171,20 @@ function CourseEditorModal({
               ))}
             </div>
           </div>
-          <div>
-            <p className="mb-2 text-sm font-medium">Progress tracking</p>
-            <select value={editProgressMode} onChange={(event) => setEditProgressMode(event.target.value as "manual" | "computed")} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]">
-              <option value="manual">Manual percent</option>
-              <option value="computed">From completed tasks</option>
-            </select>
-          </div>
-          <div>
-            <p className="mb-2 text-sm font-medium">Progress percent</p>
-            <input value={editManualProgress} type="number" min={0} max={100} onChange={(event) => setEditManualProgress(Number(event.target.value) || 0)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]" />
-          </div>
           <textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} placeholder="Course notes" className="min-h-[120px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none md:col-span-2 dark:border-white/10 dark:bg-white/[0.04]" />
+          <div className="md:col-span-2">
+            <p className="mb-2 text-sm font-medium">Panopto recordings (optional, but you should.. trust me)</p>
+            <input
+              id="course-panopto-folder-url"
+              value={editPanoptoFolderUrl}
+              onChange={(event) => setEditPanoptoFolderUrl(event.target.value)}
+              placeholder="Paste the Panopto Sessions list URL for this course"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]"
+            />
+            <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+              Weekly catch-up and task details use this. Clear the field to fall back to a built-in link when your course code matches our list.
+            </p>
+          </div>
         </div>
         <div className="mt-4 flex justify-between">
           <div className="flex gap-2">
