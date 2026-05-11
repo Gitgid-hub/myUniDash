@@ -75,6 +75,7 @@ type Action =
   | { type: "remove-catch-up-submitted-week"; payload: string }
   | { type: "prune-catch-up-submitted-weeks"; payload: { beforeWeekKey: string } }
   | { type: "set-weekly-catch-up-auto-prompt"; payload: boolean }
+  | { type: "set-apple-calendar-auto-sync"; payload: boolean }
   | { type: "ensure-calendar-feed-token" }
   | { type: "rotate-calendar-feed-token" }
   | { type: "add-task"; payload: TaskInput }
@@ -128,7 +129,8 @@ const fallback: SchoolState = {
     theme: "system",
     showTaskComposer: false,
     showSearch: false,
-    weeklyCatchUpAutoPrompt: true
+    weeklyCatchUpAutoPrompt: true,
+    appleCalendarAutoSync: false
   }
 };
 
@@ -180,7 +182,8 @@ function normalizeState(state: SchoolState): SchoolState {
         ? Array.from(new Set(state.ui!.catchUpSubmittedWeekKeys.filter((k): k is string => typeof k === "string")))
         : [],
       weeklyCatchUpAutoPrompt: state.ui?.weeklyCatchUpAutoPrompt ?? true,
-      calendarFeedToken: state.ui?.calendarFeedToken
+      calendarFeedToken: state.ui?.calendarFeedToken,
+      appleCalendarAutoSync: state.ui?.appleCalendarAutoSync ?? false
     }
   };
 }
@@ -275,6 +278,8 @@ function reducer(state: SchoolState, action: Action): SchoolState {
     }
     case "set-weekly-catch-up-auto-prompt":
       return { ...state, ui: { ...state.ui, weeklyCatchUpAutoPrompt: action.payload } };
+    case "set-apple-calendar-auto-sync":
+      return { ...state, ui: { ...state.ui, appleCalendarAutoSync: action.payload } };
     case "ensure-calendar-feed-token": {
       if (state.ui.calendarFeedToken) return state;
       return { ...state, ui: { ...state.ui, calendarFeedToken: crypto.randomUUID() } };

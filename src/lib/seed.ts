@@ -15,7 +15,8 @@ export function createSeedState(): SchoolState {
       theme: "system",
       showTaskComposer: false,
       showSearch: false,
-      weeklyCatchUpAutoPrompt: true
+      weeklyCatchUpAutoPrompt: true,
+      appleCalendarAutoSync: false
     }
   };
 }

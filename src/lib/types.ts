@@ -177,6 +177,11 @@ export interface UIState {
    * Opaque secret for `/api/calendar/sessions` (Apple Calendar “subscription” URL). Anyone with the link can read your class schedule; rotate from the calendar export dialog if leaked.
    */
   calendarFeedToken?: string;
+  /**
+   * When enabled, session edits automatically refresh the app's Apple Calendar subscription mode
+   * (link-based sync; Apple controls actual refresh timing).
+   */
+  appleCalendarAutoSync?: boolean;
 }
 
 export interface SchoolState {

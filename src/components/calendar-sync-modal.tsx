@@ -69,25 +69,21 @@ export function CalendarSyncModal({
             Apple Calendar and other apps
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-            Apple does not offer a third-party API to push events into Calendar directly. The usual approach is a{" "}
-            <strong className="font-medium text-slate-800 dark:text-slate-200">subscription</strong> URL: you add it once in
-            Calendar, and the app refreshes your class sessions in the background (timing depends on Apple).
+            Use a calendar subscription link. Add it once in Apple Calendar and updates sync automatically.
           </p>
         </div>
         <div className="space-y-4 px-6 py-4 text-sm text-slate-600 dark:text-slate-400">
           {cloudSignedIn && httpsUrl ? (
             <>
               <p className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/90">
-                Treat the link like a password: anyone who has it can see your class titles and times. Use &quot;New
-                link&quot; if it leaks.
+                Keep this link private. Use &quot;New link&quot; if it leaks.
               </p>
               <div>
                 <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-500">
                   Subscribe (recommended)
                 </p>
                 <p className="mb-2 text-xs leading-relaxed">
-                  macOS: Calendar → File → New Calendar Subscription… → paste the HTTPS or webcal link. iPhone: Settings →
-                  Calendar → Accounts → Add Subscribed Calendar.
+                  macOS: Calendar → File → New Calendar Subscription. iPhone: Settings → Calendar → Accounts → Add Subscribed Calendar.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="primary" type="button" className="text-xs" onClick={() => void copy("Subscription URL", httpsUrl)}>
@@ -112,8 +108,8 @@ export function CalendarSyncModal({
           ) : (
             <p className="text-sm">
               {cloudSignedIn
-                ? "Preparing your subscription link… open this dialog again in a moment after the app saves."
-                : "Sign in with cloud sync enabled to get a live subscription link. Until then, use a one-time file export below."}
+                ? "Preparing your subscription link..."
+                : "Sign in to get a live subscription link. Until then, use one-time import below."}
             </p>
           )}
           <div className="border-t border-slate-200/80 pt-4 dark:border-white/10">
@@ -121,8 +117,7 @@ export function CalendarSyncModal({
               One-time import
             </p>
             <p className="mb-2 text-xs leading-relaxed">
-              Downloads an .ics file you can open with File → Import in Apple Calendar. Good for offline-only use; it does not
-              auto-update when you edit courses.
+              Download an .ics file and import manually. It will not auto-update.
             </p>
             <Button variant="outline" type="button" className="text-xs" onClick={onDownloadIcs}>
               Download .ics now
@@ -138,7 +133,7 @@ export function CalendarSyncModal({
                   onRotateFeedToken();
                   pushSchoolOsToast({
                     kind: "success",
-                    message: "New subscription link created. Remove the old calendar subscription in Apple Calendar if you had one."
+                    message: "New subscription link created."
                   });
                 }}
               >

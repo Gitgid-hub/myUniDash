@@ -10,6 +10,7 @@ import {
   useState,
   type ChangeEvent,
   type ClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
 import type { ComponentType, CSSProperties } from "react";
@@ -59,7 +60,7 @@ import {
   TASK_ATTACHMENT_ACCEPT,
   TASK_ATTACHMENT_MAX_BYTES
 } from "@/lib/task-attachment-blobs";
-import { formatWeekOfLabel, getWeekKey, isOverdue, isToday, nowIso, startOfDay } from "@/lib/date";
+import { formatDue, formatWeekOfLabel, getWeekKey, isOverdue, isToday, nowIso, startOfDay } from "@/lib/date";
 import {
   completedByWeek,
   getOverdueTasks,
@@ -2202,6 +2203,7 @@ export function SchoolOS() {
   openWeeklyCatchUpRef.current = openWeeklyCatchUpForAnchor;
 
   const weeklyCatchUpAutoPrompt = state.ui?.weeklyCatchUpAutoPrompt ?? true;
+  const appleCalendarAutoSync = state.ui?.appleCalendarAutoSync ?? false;
 
   useEffect(() => {
     if (!ready) return;
@@ -2335,6 +2337,39 @@ export function SchoolOS() {
   const handleRotateCalendarFeedToken = useCallback(() => {
     dispatch({ type: "rotate-calendar-feed-token" });
   }, [dispatch]);
+
+  const calendarSessionSignature = useMemo(
+    () =>
+      state.courses
+        .map((course) => `${course.id}:${course.meetings.length}:${course.updatedAt}`)
+        .sort()
+        .join("|"),
+    [state.courses]
+  );
+  const previousCalendarSessionSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    const current = calendarSessionSignature;
+    if (previousCalendarSessionSignatureRef.current === null) {
+      previousCalendarSessionSignatureRef.current = current;
+      return;
+    }
+    if (previousCalendarSessionSignatureRef.current === current) return;
+    previousCalendarSessionSignatureRef.current = current;
+    if (!appleCalendarAutoSync) return;
+    dispatch({ type: "ensure-calendar-feed-token" });
+    if (!calendarCloudSignedIn) {
+      pushSchoolOsToast({
+        kind: "error",
+        message: "Apple auto-sync needs cloud sign-in. Sign in, then add the subscription link once."
+      });
+      return;
+    }
+    pushSchoolOsToast({
+      kind: "success",
+      message: "Session updated. Apple Calendar subscription will refresh automatically."
+    });
+  }, [appleCalendarAutoSync, calendarCloudSignedIn, calendarSessionSignature, dispatch, ready]);
 
   const handleWeeklyCatchUpGenerate = useCallback(
     (attendedInstanceKeys: Set<string>, mode: "initial" | "edit") => {
@@ -3700,6 +3735,31 @@ export function SchoolOS() {
               <p className="text-sm text-slate-600 dark:text-slate-300">{user?.email ?? "Signed in"}</p>
               <Button variant="outline" className="mt-3 w-full justify-center" onClick={() => void handleSignOut()} disabled={isSigningOut}>
                 {isSigningOut ? "Signing out..." : "Sign out"}
+              </Button>
+            </Panel>
+
+            <Panel className="bg-white/92 dark:bg-[#101317]/92">
+              <h3 className="mb-2 font-semibold">Apple Calendar sync</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Subscription mode: Apple pulls updates itself. Turn this on to auto-prepare sync whenever you edit sessions here.
+              </p>
+              <label className="mt-3 inline-flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-slate-50/70 px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]">
+                <span className="text-sm text-slate-700 dark:text-slate-200">Auto-sync sessions to Apple subscription</span>
+                <input
+                  type="checkbox"
+                  checked={appleCalendarAutoSync}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    dispatch({ type: "set-apple-calendar-auto-sync", payload: next });
+                    if (next) {
+                      handleOpenCalendarSync();
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+              </label>
+              <Button variant="outline" className="mt-3 w-full justify-center text-xs" onClick={handleOpenCalendarSync}>
+                Manage Apple Calendar subscription link
               </Button>
             </Panel>
 
@@ -5988,6 +6048,84 @@ function CalendarView({
     return () => observer.disconnect();
   }, [clampQuickCreatePopoverToViewport, quickCreateAnchor, quickCreateDraft]);
 
+  const commitQuickCreateSession = useCallback(() => {
+    const draft = quickCreateDraft;
+    if (!draft) return;
+    const meeting = buildCourseMeeting({
+      day: getWeekDayFromDate(draft.date),
+      start: draft.start,
+      end: draft.end,
+      anchorDate: formatDateKey(draft.date),
+      title: draft.title,
+      location: draft.location,
+      notes: "",
+      type: draft.sessionType,
+      isAllDay: draft.isAllDay,
+      cadence: draft.cadence,
+      interval: 1,
+      repeatDays: draft.repeatDays,
+      until: "",
+      count: ""
+    });
+    const course = courses.find((c) => c.id === draft.courseId);
+    if (!course && draft.mode !== "edit" && draft.courseId === UNRELATED_SESSIONS_COURSE_ID) {
+      onAddCourse({
+        id: UNRELATED_SESSIONS_COURSE_ID,
+        name: "Unrelated sessions",
+        code: "PRIVATE",
+        color: "#64748b",
+        meetings: [meeting]
+      });
+      setQuickCreateDraft(null);
+      setQuickCreateAnchor(null);
+      return;
+    }
+    if (!course) return;
+    if (draft.mode === "edit" && draft.meetingId) {
+      onUpdateCourse({
+        id: course.id,
+        meetings: course.meetings.map((m) =>
+          m.id === draft.meetingId
+            ? {
+                ...m,
+                day: getWeekDayFromDate(draft.date),
+                start: draft.isAllDay ? "00:00" : draft.start,
+                end: draft.isAllDay ? "23:59" : draft.end,
+                anchorDate: new Date(`${formatDateKey(draft.date)}T12:00:00`).toISOString(),
+                title: draft.title.trim() || undefined,
+                location: draft.location.trim() || undefined,
+                type: draft.sessionType,
+                isAllDay: draft.isAllDay,
+                recurrence:
+                  draft.cadence === "weekly"
+                    ? {
+                        ...(m.recurrence ?? {}),
+                        cadence: "weekly",
+                        interval: m.recurrence?.interval ?? 1,
+                        daysOfWeek: draft.repeatDays
+                      }
+                    : { cadence: "none", interval: 1 }
+              }
+            : m
+        )
+      });
+    } else {
+      onUpdateCourse({ id: course.id, meetings: [...course.meetings, meeting] });
+    }
+    setQuickCreateDraft(null);
+    setQuickCreateAnchor(null);
+  }, [quickCreateDraft, courses, onAddCourse, onUpdateCourse]);
+
+  const onQuickCreateFieldEnter = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== "Enter" || event.shiftKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      commitQuickCreateSession();
+    },
+    [commitQuickCreateSession]
+  );
+
   function minutesFromIso(iso: string): number {
     const date = new Date(iso);
     return date.getHours() * 60 + date.getMinutes();
@@ -6473,7 +6611,11 @@ function CalendarView({
           }}
           className="calendar-scroll-area min-h-0 flex-1 overflow-auto calendar-scroll-area-active"
         >
-          <div ref={weekGridBodyRef} className="relative grid grid-cols-[64px_repeat(7,minmax(0,1fr))]">
+          <div
+            ref={weekGridBodyRef}
+            className="relative grid grid-cols-[64px_repeat(7,minmax(0,1fr))] pb-24"
+            style={{ minHeight: timelineHours.length * WEEK_TIMELINE_ROW_PX }}
+          >
             <div className="border-r border-slate-200/80 dark:border-white/10">
               {timelineHours.map((hour) => (
                 <div key={hour} className="border-b border-slate-200/70 px-3 py-2 text-xs text-slate-400 dark:border-white/10" style={{ height: `${WEEK_TIMELINE_ROW_PX}px` }}>
@@ -6618,13 +6760,24 @@ function CalendarView({
                       sessionResizePreview.dateKey === sessionDateKey
                         ? sessionResizePreview
                         : null;
-                    const startMinutes = resizePreview ? resizePreview.startMinutes : Math.round(parseTimeValue(session.meeting.start) * 60);
-                    const endMinutes = resizePreview ? resizePreview.endMinutes : Math.round(parseTimeValue(session.meeting.end) * 60);
+                    const rawStart = resizePreview ? resizePreview.startMinutes : Math.round(parseTimeValue(session.meeting.start) * 60);
+                    const rawEnd = resizePreview ? resizePreview.endMinutes : Math.round(parseTimeValue(session.meeting.end) * 60);
+                    const startMinutes = Math.min(rawStart, rawEnd);
+                    const endMinutes = Math.max(rawStart, rawEnd);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * WEEK_TIMELINE_ROW_PX);
                     const isCompactSession = height < 70;
                     const isPrivateSession = session.course.id === UNRELATED_SESSIONS_COURSE_ID;
                     const privateTitle = session.meeting.title?.trim() || "New session";
+                    const meetingTitle = session.meeting.title?.trim();
+                    const sessionPrimaryTitle = isPrivateSession
+                      ? privateTitle
+                      : meetingTitle || session.course.name;
+                    const sessionSecondaryTitle = isPrivateSession
+                      ? "Private"
+                      : meetingTitle
+                        ? session.course.name
+                        : session.meeting.title || formatSessionType(session.meeting.type);
                     const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
                     const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
                     const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
@@ -6639,7 +6792,10 @@ function CalendarView({
                           event.stopPropagation();
                         }}
                         onDragStart={(event) => {
-                          const durationMinutes = Math.max(30, Math.round((parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60));
+                          const durationMinutes = Math.max(
+                            30,
+                            Math.round(Math.abs(parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60)
+                          );
                           const rect = event.currentTarget.getBoundingClientRect();
                           const grabOffsetRatio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
                           setDraggingSession({
@@ -6667,7 +6823,7 @@ function CalendarView({
                           );
                         }}
                         dir="auto"
-                        className="absolute overflow-hidden rounded-2xl border px-3 py-2 text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity"
+                        className="absolute flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden rounded-2xl border px-3 py-2 text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity"
                         style={{
                           ...softCourseStyle(session.course.color),
                           top,
@@ -6692,13 +6848,24 @@ function CalendarView({
                                 : undefined
                         }}
                       >
-                        <p className="truncate font-semibold text-slate-900 dark:text-white">
-                          {isPrivateSession ? privateTitle : session.course.name}
+                        <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
+                          isCompactSession ? "text-[11px] leading-[13px] line-clamp-1" : "leading-tight line-clamp-2"
+                        }`}>
+                          {sessionPrimaryTitle}
                         </p>
-                        <p className="truncate text-slate-700 dark:text-white/95">
-                          {isPrivateSession ? "Private" : (session.meeting.title || formatSessionType(session.meeting.type))}
+                        {!isCompactSession && (
+                          <p className="min-w-0 max-w-full break-words line-clamp-2 leading-tight text-slate-700 dark:text-white/95">
+                            {sessionSecondaryTitle}
+                          </p>
+                        )}
+                        <p
+                          dir="ltr"
+                          className={`mt-0.5 min-w-0 max-w-full text-slate-600 dark:text-white/90 ${
+                            isCompactSession ? "text-[10px] leading-[12px]" : "text-[11px] leading-tight"
+                          }`}
+                        >
+                          {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
                         </p>
-                        <p className="mt-1 text-[11px] text-slate-600 dark:text-white/90">{formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}</p>
                         {session.meeting.location && (
                           <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-slate-600 dark:text-white/90">
                             {session.meeting.location}
@@ -6805,8 +6972,10 @@ function CalendarView({
                     const resizeP = workBlockResizePreview?.id === block.id ? workBlockResizePreview : null;
                     const blockStartMinutes = minutesFromIso(block.startAt);
                     const blockEndMinutes = minutesFromIso(block.endAt);
-                    const startM = resizeP ? resizeP.startMinutes : dragP ? dragP.startMinutes : blockStartMinutes;
-                    const endM = resizeP ? resizeP.endMinutes : dragP ? dragP.endMinutes : blockEndMinutes;
+                    const rawStartM = resizeP ? resizeP.startMinutes : dragP ? dragP.startMinutes : blockStartMinutes;
+                    const rawEndM = resizeP ? resizeP.endMinutes : dragP ? dragP.endMinutes : blockEndMinutes;
+                    const startM = Math.min(rawStartM, rawEndM);
+                    const endM = Math.max(rawStartM, rawEndM);
                     const top = Math.max(0, ((startM - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
                     const height = Math.max(28, ((endM - startM) / 60) * WEEK_TIMELINE_ROW_PX);
                     const isCompactBlock = height < 68;
@@ -6831,7 +7000,7 @@ function CalendarView({
                           });
                         }}
                         onDoubleClick={() => setActiveWorkBlockId(block.id)}
-                        className={`absolute left-[8px] right-[8px] z-[11] overflow-hidden rounded-2xl border text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_10px_24px_rgba(0,0,0,0.25)] ${
+                        className={`absolute left-[8px] right-[8px] z-[11] flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden rounded-2xl border text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_10px_24px_rgba(0,0,0,0.25)] ${
                           isCompactBlock ? "px-3 py-1.5" : "px-3 py-2"
                         }`}
                         style={{
@@ -6841,11 +7010,14 @@ function CalendarView({
                           borderColor: `${color}55`
                         }}
                       >
-                        <p className={`truncate font-semibold text-slate-900 dark:text-white ${isCompactBlock ? "leading-4" : ""}`}>
+                        <p
+                          className={`min-w-0 max-w-full break-words font-semibold leading-tight text-slate-900 line-clamp-2 dark:text-white ${isCompactBlock ? "text-[11px]" : "text-xs"}`}
+                        >
                           {linkedTask?.title ?? block.titleSnapshot ?? "Work block"}
                         </p>
                         <p
-                          className={`mt-1 truncate text-[11px] text-slate-600 dark:text-white/90 ${isCompactBlock ? "leading-4" : ""}`}
+                          dir="ltr"
+                          className={`min-w-0 max-w-full text-[11px] leading-tight text-slate-600 dark:text-white/90 ${isCompactBlock ? "" : "mt-0.5"}`}
                         >
                           {new Date(block.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} -{" "}
                           {new Date(block.endAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -7083,7 +7255,7 @@ function CalendarView({
                   <div className="space-y-1">
                     {daySessions.map((session) => (
                       <div key={session.instanceKey} className="rounded-xl px-2 py-1 text-[11px] font-medium text-slate-900 dark:text-slate-100" style={softCourseStyle(session.course.color)}>
-                        {session.course.name}
+                        {session.meeting.title?.trim() || session.course.name}
                       </div>
                     ))}
                     {dayTasks.slice(0, 2).map((task) => (
@@ -7211,7 +7383,11 @@ function CalendarView({
               }}
               className="calendar-scroll-area min-h-0 flex-1 overflow-auto calendar-scroll-area-active"
             >
-              <div ref={dayGridBodyRef} className="relative grid grid-cols-[72px_minmax(0,1fr)]">
+              <div
+                ref={dayGridBodyRef}
+                className="relative grid grid-cols-[72px_minmax(0,1fr)] pb-24"
+                style={{ minHeight: timelineHours.length * dayHourHeight }}
+              >
                 <div className="border-r border-slate-200/80 dark:border-white/10">
                   {timelineHours.map((hour) => (
                     <div key={hour} className="border-b border-slate-200/70 px-3 py-2 text-xs text-slate-400 dark:border-white/10" style={{ height: `${dayHourHeight}px` }}>
@@ -7470,13 +7646,24 @@ function CalendarView({
                       sessionResizePreview.dateKey === sessionDateKey
                         ? sessionResizePreview
                         : null;
-                    const startMinutes = resizePreview ? resizePreview.startMinutes : Math.round(parseTimeValue(session.meeting.start) * 60);
-                    const endMinutes = resizePreview ? resizePreview.endMinutes : Math.round(parseTimeValue(session.meeting.end) * 60);
+                    const rawStart = resizePreview ? resizePreview.startMinutes : Math.round(parseTimeValue(session.meeting.start) * 60);
+                    const rawEnd = resizePreview ? resizePreview.endMinutes : Math.round(parseTimeValue(session.meeting.end) * 60);
+                    const startMinutes = Math.min(rawStart, rawEnd);
+                    const endMinutes = Math.max(rawStart, rawEnd);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * dayHourHeight);
                     const isCompactSession = height < 70;
                     const isPrivateSession = session.course.id === UNRELATED_SESSIONS_COURSE_ID;
                     const privateTitle = session.meeting.title?.trim() || "New session";
+                    const meetingTitle = session.meeting.title?.trim();
+                    const sessionPrimaryTitle = isPrivateSession
+                      ? privateTitle
+                      : meetingTitle || session.course.name;
+                    const sessionSecondaryTitle = isPrivateSession
+                      ? "Private"
+                      : meetingTitle
+                        ? session.course.name
+                        : session.meeting.title || formatSessionType(session.meeting.type);
                     const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
                     const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
                     const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
@@ -7491,7 +7678,10 @@ function CalendarView({
                           event.stopPropagation();
                         }}
                         onDragStart={(event) => {
-                          const durationMinutes = Math.max(30, Math.round((parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60));
+                          const durationMinutes = Math.max(
+                            30,
+                            Math.round(Math.abs(parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60)
+                          );
                           const rect = event.currentTarget.getBoundingClientRect();
                           const grabOffsetRatio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
                           setDraggingSession({
@@ -7519,7 +7709,9 @@ function CalendarView({
                           );
                         }}
                         dir="auto"
-                        className="absolute rounded-[22px] border px-4 py-3 text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)]"
+                        className={`absolute flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[22px] border text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)] ${
+                          isCompactSession ? "gap-0 px-3 py-1.5" : "gap-0.5 px-4 py-3"
+                        }`}
                         style={{
                           ...softCourseStyle(session.course.color),
                           top,
@@ -7543,14 +7735,29 @@ function CalendarView({
                                 : undefined
                         }}
                       >
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                          {isPrivateSession ? privateTitle : session.course.name}
+                        <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
+                          isCompactSession ? "text-[12px] leading-[14px] line-clamp-1" : "text-sm leading-tight line-clamp-2"
+                        }`}>
+                          {sessionPrimaryTitle}
                         </p>
-                        <p className="text-xs text-slate-700 dark:text-white/95">
-                          {isPrivateSession ? "Private" : (session.meeting.title || formatSessionType(session.meeting.type))}
+                        {!isCompactSession && (
+                          <p className="min-w-0 max-w-full break-words text-xs leading-tight text-slate-700 line-clamp-2 dark:text-white/95">
+                            {sessionSecondaryTitle}
+                          </p>
+                        )}
+                        <p
+                          dir="ltr"
+                          className={`min-w-0 max-w-full text-slate-700 dark:text-white/90 ${
+                            isCompactSession ? "text-[10px] leading-[12px]" : "text-xs leading-tight"
+                          }`}
+                        >
+                          {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
                         </p>
-                        <p className="text-xs text-slate-700 dark:text-white/90">{formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}</p>
-                        {session.meeting.location && <p className="text-xs text-slate-700 dark:text-white/90">{session.meeting.location}</p>}
+                        {!isCompactSession && session.meeting.location && (
+                          <p className="min-w-0 max-w-full break-words text-xs leading-snug text-slate-700 line-clamp-2 dark:text-white/90">
+                            {session.meeting.location}
+                          </p>
+                        )}
                         <span
                           className={`absolute left-3 right-3 top-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactSession ? "h-1" : ""}`}
                           onMouseDown={(event) => {
@@ -7606,8 +7813,10 @@ function CalendarView({
                     const blockEndMinutes = minutesFromIso(block.endAt);
                     const resizePreview = workBlockResizePreview && workBlockResizePreview.id === block.id ? workBlockResizePreview : null;
                     const preview = workBlockDragPreview && workBlockDragPreview.id === block.id ? workBlockDragPreview : null;
-                    const startMinutes = resizePreview ? resizePreview.startMinutes : preview ? preview.startMinutes : blockStartMinutes;
-                    const endMinutes = resizePreview ? resizePreview.endMinutes : preview ? preview.endMinutes : blockEndMinutes;
+                    const rawStartB = resizePreview ? resizePreview.startMinutes : preview ? preview.startMinutes : blockStartMinutes;
+                    const rawEndB = resizePreview ? resizePreview.endMinutes : preview ? preview.endMinutes : blockEndMinutes;
+                    const startMinutes = Math.min(rawStartB, rawEndB);
+                    const endMinutes = Math.max(rawStartB, rawEndB);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * dayHourHeight);
                     const isCompactBlock = height < 68;
@@ -7632,7 +7841,7 @@ function CalendarView({
                           });
                         }}
                         onDoubleClick={() => setActiveWorkBlockId(block.id)}
-                        className={`absolute overflow-hidden rounded-[22px] border text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)] ${
+                        className={`absolute flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden rounded-[22px] border text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)] ${
                           isCompactBlock ? "px-3 py-1.5" : "px-4 py-3"
                         }`}
                         style={{
@@ -7644,10 +7853,15 @@ function CalendarView({
                           width: "calc(100% - 20px)"
                         }}
                       >
-                        <p className={`font-semibold text-slate-900 dark:text-white ${isCompactBlock ? "truncate text-xs leading-4" : "text-sm"}`}>
+                        <p
+                          className={`min-w-0 max-w-full break-words font-semibold leading-tight text-slate-900 line-clamp-2 dark:text-white ${isCompactBlock ? "text-xs" : "text-sm"}`}
+                        >
                           {linkedTask?.title ?? block.titleSnapshot ?? "Work block"}
                         </p>
-                        <p className={`text-slate-700 dark:text-white/90 ${isCompactBlock ? "truncate text-[11px] leading-4" : "text-xs"}`}>
+                        <p
+                          dir="ltr"
+                          className={`min-w-0 max-w-full leading-tight text-slate-700 dark:text-white/90 ${isCompactBlock ? "text-[11px]" : "text-xs"}`}
+                        >
                           {new Date(block.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - {new Date(block.endAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         </p>
                         <span
@@ -7707,21 +7921,21 @@ function CalendarView({
             </div>
           </div>
 
-          <Panel className="min-h-0 bg-white/90 dark:bg-[#101317]/90">
-            <div className="mb-2 flex items-center justify-between px-4 pt-2.5">
+          <Panel className="flex h-full min-h-0 flex-col overflow-hidden bg-white/90 dark:bg-[#101317]/90">
+            <div className="mb-2 shrink-0 px-4 pt-2.5">
               <div>
                 <h3 className="text-base font-semibold">Tasks</h3>
                 <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Drag into the schedule to time-block.</p>
               </div>
             </div>
-            <div className="calendar-scroll-area min-h-0 max-h-[84vh] overflow-auto px-2 pb-3">
+            <div className="calendar-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-2 pb-3 pt-1">
               {courses
                 .filter((course) => !course.archived)
                 .map((course) => {
                   const courseTasks = tasksByCourseId.get(course.id) ?? [];
                   if (courseTasks.length === 0) return null;
                   return (
-                    <div key={course.id} className="mb-3 overflow-hidden rounded-2xl border border-slate-200/80 dark:border-white/10">
+                    <div key={course.id} className="mb-3 rounded-2xl border border-slate-200/80 dark:border-white/10">
                       <div className="flex items-center justify-between bg-slate-50/70 px-3 py-2 dark:bg-white/[0.03]">
                         <div className="flex items-center gap-2">
                           <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: course.color }} />
@@ -7745,10 +7959,24 @@ function CalendarView({
                             }}
                             className="group flex cursor-grab items-center justify-between gap-3 px-3 py-2.5 active:cursor-grabbing"
                           >
-                            <button type="button" onClick={() => onOpenTask(task.id)} className="min-w-0 flex-1 text-start">
+                            <button
+                              type="button"
+                              onClick={() => onOpenTask(task.id)}
+                              className="flex min-w-0 flex-1 flex-col items-stretch text-start"
+                            >
                               <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{task.title}</p>
-                              <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">
-                                {task.status} · {(() => {
+                              <p
+                                className={`mt-0.5 break-words text-xs leading-snug ${
+                                  task.dueAt && isOverdue(task.dueAt) && task.status !== "done"
+                                    ? "font-medium text-rose-600 dark:text-rose-400"
+                                    : "text-slate-500 dark:text-slate-400"
+                                }`}
+                              >
+                                Due: {formatDue(task.dueAt)}
+                                {" · "}
+                                {task.status}
+                                {" · "}
+                                {(() => {
                                   const bookedBlock = bookedBlockByTaskId.get(task.id);
                                   return bookedBlock
                                     ? `Booked ${new Date(bookedBlock.startAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${new Date(bookedBlock.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
@@ -7874,8 +8102,20 @@ function CalendarView({
             style={{ left: `${quickCreateAnchor.left}px`, top: `${quickCreateAnchor.top}px`, maxHeight: "calc(100vh - 24px)" }}
             onClick={(event) => event.stopPropagation()}
           >
-            <input value={quickCreateDraft.title} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, title: event.target.value } : curr)} placeholder={quickCreateDraft.mode === "edit" ? "Session title" : "New Event"} className="w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold outline-none placeholder:text-slate-400" />
-            <input value={quickCreateDraft.location} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, location: event.target.value } : curr)} placeholder="Add Location or Video Call" className="mt-0.5 w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-slate-400" />
+            <input
+              value={quickCreateDraft.title}
+              onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, title: event.target.value } : curr)}
+              onKeyDown={onQuickCreateFieldEnter}
+              placeholder={quickCreateDraft.mode === "edit" ? "Session title" : "New Event"}
+              className="w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-base font-semibold outline-none placeholder:text-slate-400"
+            />
+            <input
+              value={quickCreateDraft.location}
+              onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, location: event.target.value } : curr)}
+              onKeyDown={onQuickCreateFieldEnter}
+              placeholder="Add Location or Video Call"
+              className="mt-0.5 w-full rounded-lg border border-transparent bg-transparent px-1 py-0.5 text-xs outline-none placeholder:text-slate-400"
+            />
             <button
               type="button"
               onClick={() => setQuickCreateDraft((curr) => curr ? { ...curr, detailsOpen: !curr.detailsOpen } : curr)}
@@ -7916,8 +8156,20 @@ function CalendarView({
                 </select>
                 {!quickCreateDraft.isAllDay && (
                   <div className="grid grid-cols-2 gap-2">
-                    <input type="time" value={quickCreateDraft.start} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, start: event.target.value } : curr)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]" />
-                    <input type="time" value={quickCreateDraft.end} onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, end: event.target.value } : curr)} className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]" />
+                    <input
+                      type="time"
+                      value={quickCreateDraft.start}
+                      onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, start: event.target.value } : curr)}
+                      onKeyDown={onQuickCreateFieldEnter}
+                      className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]"
+                    />
+                    <input
+                      type="time"
+                      value={quickCreateDraft.end}
+                      onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, end: event.target.value } : curr)}
+                      onKeyDown={onQuickCreateFieldEnter}
+                      className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]"
+                    />
                   </div>
                 )}
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
@@ -7929,6 +8181,7 @@ function CalendarView({
                       if (!next) return;
                       setQuickCreateDraft((curr) => (curr ? { ...curr, date: new Date(`${next}T12:00:00`) } : curr));
                     }}
+                    onKeyDown={onQuickCreateFieldEnter}
                     className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none dark:border-white/10 dark:bg-white/[0.05]"
                   />
                   <Button
@@ -7976,73 +8229,7 @@ function CalendarView({
             </div>
             <div className="mt-3 flex items-center justify-end gap-2">
               <Button variant="ghost" onClick={() => { setQuickCreateDraft(null); setQuickCreateAnchor(null); }}>Cancel</Button>
-              <Button
-                onClick={() => {
-                  const meeting = buildCourseMeeting({
-                    day: getWeekDayFromDate(quickCreateDraft.date),
-                    start: quickCreateDraft.start,
-                    end: quickCreateDraft.end,
-                    anchorDate: formatDateKey(quickCreateDraft.date),
-                    title: quickCreateDraft.title,
-                    location: quickCreateDraft.location,
-                    notes: "",
-                    type: quickCreateDraft.sessionType,
-                    isAllDay: quickCreateDraft.isAllDay,
-                    cadence: quickCreateDraft.cadence,
-                    interval: 1,
-                    repeatDays: quickCreateDraft.repeatDays,
-                    until: "",
-                    count: ""
-                  });
-                  const course = courses.find((c) => c.id === quickCreateDraft.courseId);
-                  if (!course && quickCreateDraft.mode !== "edit" && quickCreateDraft.courseId === UNRELATED_SESSIONS_COURSE_ID) {
-                    onAddCourse({
-                      id: UNRELATED_SESSIONS_COURSE_ID,
-                      name: "Unrelated sessions",
-                      code: "PRIVATE",
-                      color: "#64748b",
-                      meetings: [meeting]
-                    });
-                    setQuickCreateDraft(null);
-                    setQuickCreateAnchor(null);
-                    return;
-                  }
-                  if (!course) return;
-                  if (quickCreateDraft.mode === "edit" && quickCreateDraft.meetingId) {
-                    onUpdateCourse({
-                      id: course.id,
-                      meetings: course.meetings.map((meeting) =>
-                        meeting.id === quickCreateDraft.meetingId
-                          ? {
-                              ...meeting,
-                              day: getWeekDayFromDate(quickCreateDraft.date),
-                              start: quickCreateDraft.isAllDay ? "00:00" : quickCreateDraft.start,
-                              end: quickCreateDraft.isAllDay ? "23:59" : quickCreateDraft.end,
-                              anchorDate: new Date(`${formatDateKey(quickCreateDraft.date)}T12:00:00`).toISOString(),
-                              title: quickCreateDraft.title.trim() || undefined,
-                              location: quickCreateDraft.location.trim() || undefined,
-                              type: quickCreateDraft.sessionType,
-                              isAllDay: quickCreateDraft.isAllDay,
-                              recurrence:
-                                quickCreateDraft.cadence === "weekly"
-                                  ? {
-                                      ...(meeting.recurrence ?? {}),
-                                      cadence: "weekly",
-                                      interval: meeting.recurrence?.interval ?? 1,
-                                      daysOfWeek: quickCreateDraft.repeatDays
-                                    }
-                                  : { cadence: "none", interval: 1 }
-                            }
-                          : meeting
-                      )
-                    });
-                  } else {
-                    onUpdateCourse({ id: course.id, meetings: [...course.meetings, meeting] });
-                  }
-                  setQuickCreateDraft(null);
-                  setQuickCreateAnchor(null);
-                }}
-              >
+              <Button onClick={commitQuickCreateSession}>
                 {quickCreateDraft.mode === "edit" ? "Save" : "Add session"}
               </Button>
             </div>
@@ -9354,7 +9541,17 @@ function SessionEditorModal({
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm" onClick={onClose}>
-      <Panel className="flex max-h-[88vh] w-full max-w-[960px] flex-col overflow-hidden bg-white/96 dark:bg-[#101317]/96" onClick={(event) => event.stopPropagation()}>
+      <Panel
+        className="flex max-h-[88vh] w-full max-w-[960px] flex-col overflow-hidden bg-white/96 dark:bg-[#101317]/96"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.shiftKey) return;
+          const tag = (event.target as HTMLElement).tagName;
+          if (tag === "TEXTAREA" || tag === "BUTTON" || tag === "A" || tag === "SELECT") return;
+          event.preventDefault();
+          saveSession();
+        }}
+      >
         <div className="mb-3 flex items-center justify-between border-b border-slate-200/80 pb-3 dark:border-white/10">
           <div>
             <h3 className="text-lg font-semibold tracking-tight">{editingMeeting ? "Edit session" : "Add session"}</h3>
