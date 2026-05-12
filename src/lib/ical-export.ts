@@ -90,7 +90,7 @@ export function buildSchoolSessionsIcs(
   for (const occ of occs) {
     const { start, end, allDay } = occurrenceBounds(occ);
     const titlePart = occ.meeting.title?.trim() || formatSessionType(occ.meeting.type);
-    const summary = escapeIcsText(`${occ.course.code} · ${titlePart}`.slice(0, 240));
+    const summary = escapeIcsText(`${occ.course.code} ${occ.course.name} · ${titlePart}`.slice(0, 240));
     const loc = occ.meeting.location?.trim();
     const descBits = [
       occ.course.name,
