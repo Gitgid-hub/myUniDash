@@ -5514,7 +5514,6 @@ function CalendarView({
   onAddCourse,
   onAddPersonalEvent,
   onUpdatePersonalEvent,
-  onDeletePersonalEvent: _onDeletePersonalEvent,
   onSplitPersonalEvent,
   onAddWorkBlock,
   onUpdateWorkBlock,
