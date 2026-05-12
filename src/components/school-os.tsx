@@ -131,6 +131,10 @@ import { PanoptoFolderPromptModal } from "@/components/panopto-folder-prompt-mod
 import { resolvePanoptoFolderUrl, shouldOfferPanoptoFolderPastePrompt } from "@/lib/panopto-folder-url";
 import type { WorkspaceUserRow } from "@/lib/workspace-user-admin";
 import type { EarlyAccessRequestRow } from "@/lib/early-access-types";
+import { formatHourMinutes, sameCalendarDate, softCourseStyle } from "@/lib/calendar-utils";
+import { SessionCard } from "@/components/calendar/session-card";
+import type { SessionDragInfo, SelectedSession as CalendarSelectedSession } from "@/components/calendar/session-card";
+import { WorkBlockCard } from "@/components/calendar/work-block-card";
 
 const navItems: Array<{ id: MainView; label: string; icon: ComponentType<{ className?: string }> }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -7006,168 +7010,30 @@ function CalendarView({
                     const endMinutes = Math.max(rawStart, rawEnd);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * WEEK_TIMELINE_ROW_PX);
-                    const isUltraCompact = height < 48;
-                    const isCompactSession = height < 70;
-                    const isPrivateSession = session.course.id === PERSONAL_EVENTS_COURSE_ID;
-                    const privateTitle = session.meeting.title?.trim() || "New session";
-                    const meetingTitle = session.meeting.title?.trim();
-                    const sessionPrimaryTitle = isPrivateSession
-                      ? privateTitle
-                      : meetingTitle || session.course.name;
-                    const sessionSecondaryTitle = isPrivateSession
-                      ? "Private"
-                      : meetingTitle
-                        ? session.course.name
-                        : session.meeting.title || formatSessionType(session.meeting.type);
-                    const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
-                    const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
-                    const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
                     return (
-                      <button
-                        type="button"
+                      <SessionCard
                         key={session.instanceKey}
-                        data-calendar-interactive="true"
-                        draggable
-                        onMouseDown={(event) => {
-                          // Prevent empty-grid drag-create handlers from firing when interacting with an existing session.
-                          event.stopPropagation();
+                        session={session}
+                        variant="week"
+                        top={top}
+                        height={height}
+                        startMinutes={startMinutes}
+                        endMinutes={endMinutes}
+                        sessionDateKey={sessionDateKey}
+                        minAllowedMinutes={getMinimumAllowedMinutesForDate(session.date)}
+                        selectedSession={selectedSession as CalendarSelectedSession | null}
+                        newlyAddedCourseId={newlyAddedCourseId}
+                        dimmed={!!hoveredTentativeOptionId}
+                        onSessionClick={onSessionClick}
+                        onSessionDoubleClick={onSessionDoubleClick}
+                        onOpenQuickEditor={openQuickEditorForSession}
+                        onDragStart={(info: SessionDragInfo) => setDraggingSession(info)}
+                        onDragEnd={() => { setDraggingSession(null); setDragPreview(null); }}
+                        onResizeEdge={(edge, safeStart, end) => {
+                          setResizingSession({ courseId: session.course.id, meetingId: session.meeting.id!, edge, startMinutes: safeStart, endMinutes: end, dateKey: sessionDateKey });
+                          setSessionResizePreview({ courseId: session.course.id, meetingId: session.meeting.id!, startMinutes: safeStart, endMinutes: end, dateKey: sessionDateKey });
                         }}
-                        onDragStart={(event) => {
-                          const durationMinutes = Math.max(
-                            30,
-                            Math.round(Math.abs(parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60)
-                          );
-                          const rect = event.currentTarget.getBoundingClientRect();
-                          const grabOffsetRatio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
-                          setDraggingSession({
-                            courseId: session.course.id,
-                            meetingId: session.meeting.id!,
-                            durationMinutes,
-                            grabOffsetRatio: Math.max(0, Math.min(1, grabOffsetRatio)),
-                            sourceDate: session.date
-                          });
-                          event.dataTransfer.effectAllowed = "move";
-                          event.dataTransfer.setData("text/plain", session.meeting.id!);
-                        }}
-                        onDragEnd={() => {
-                          setDraggingSession(null);
-                          setDragPreview(null);
-                        }}
-                        onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
-                        onDoubleClick={(event) => {
-                          onSessionDoubleClick?.(session.course.id, session.meeting.id!, session.date);
-                          openQuickEditorForSession(
-                            session.course,
-                            session.meeting,
-                            session.date,
-                            event.currentTarget.getBoundingClientRect()
-                          );
-                        }}
-                        dir="auto"
-                        className={`absolute flex min-h-0 min-w-0 overflow-hidden rounded-2xl border text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity ${isUltraCompact ? "flex-row items-center gap-1 px-2 py-0" : "flex-col gap-0.5 px-3 py-2"}`}
-                        style={{
-                          ...softCourseStyle(session.course.color),
-                          top,
-                          height,
-                          borderColor:
-                            selectedSession?.courseId === session.course.id &&
-                            selectedSession?.meetingId === session.meeting.id &&
-                            sameCalendarDate(selectedSession.anchorDate, session.date)
-                              ? "rgba(250,204,21,0.72)"
-                              : `${session.course.color}50`,
-                          left: `calc(${session.column * overlapStepPct}% + 6px)`,
-                          width: `calc(${overlapWidthPct}% - 12px)`,
-                          opacity: hoveredTentativeOptionId ? 0.22 : 1,
-                          zIndex: 10 + session.column,
-                          boxShadow:
-                            selectedSession?.courseId === session.course.id &&
-                            selectedSession?.meetingId === session.meeting.id &&
-                            sameCalendarDate(selectedSession.anchorDate, session.date)
-                              ? "0 0 0 1px rgba(250,204,21,0.55), 0 0 14px rgba(250,204,21,0.20), 0 10px 24px rgba(15,23,42,0.08)"
-                              : isFreshlyAddedCourse
-                                ? "0 0 0 1px rgba(34,197,94,0.45), 0 0 18px rgba(16,185,129,0.26), 0 10px 24px rgba(15,23,42,0.08)"
-                                : undefined
-                        }}
-                      >
-                        {isUltraCompact ? (
-                          <p dir="auto" className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-none text-slate-900 dark:text-white">
-                            {sessionPrimaryTitle}
-                          </p>
-                        ) : (
-                          <>
-                            <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
-                              isCompactSession ? "text-[11px] leading-[13px] line-clamp-1" : "leading-tight line-clamp-2"
-                            }`}>
-                              {sessionPrimaryTitle}
-                            </p>
-                            {!isCompactSession && (
-                              <p className="min-w-0 max-w-full break-words line-clamp-2 leading-tight text-slate-700 dark:text-white/95">
-                                {sessionSecondaryTitle}
-                              </p>
-                            )}
-                            <p
-                              dir="ltr"
-                              className={`mt-0.5 min-w-0 max-w-full text-slate-600 dark:text-white/90 ${
-                                isCompactSession ? "text-[10px] leading-[12px]" : "text-[11px] leading-tight"
-                              }`}
-                            >
-                              {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
-                            </p>
-                            {session.meeting.location && height >= 110 && (
-                              <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-slate-600 dark:text-white/90">
-                                {session.meeting.location}
-                              </p>
-                            )}
-                          </>
-                        )}
-                        <span
-                          className={`absolute left-2 right-2 top-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactSession ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            const minAllowedMinutes = getMinimumAllowedMinutesForDate(session.date);
-                            const safeStart = Math.max(startMinutes, minAllowedMinutes);
-                            if (safeStart >= endMinutes - 15) return;
-                            setResizingSession({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              edge: "start",
-                              startMinutes: safeStart,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                            setSessionResizePreview({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              startMinutes: safeStart,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                          }}
-                        />
-                        <span
-                          className={`absolute left-2 right-2 bottom-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactSession ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            setResizingSession({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              edge: "end",
-                              startMinutes,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                            setSessionResizePreview({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              startMinutes,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                          }}
-                        />
-                      </button>
+                      />
                     );
                   })}
                   {tentativeTimed.map((session) => {
@@ -7227,95 +7093,35 @@ function CalendarView({
                     const endM = Math.max(rawStartM, rawEndM);
                     const top = Math.max(0, ((startM - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
                     const height = Math.max(28, ((endM - startM) / 60) * WEEK_TIMELINE_ROW_PX);
-                    const isCompactBlock = height < 68;
                     const course = courseMap[block.courseId as string];
                     const linkedTask = tasks.find((task) => task.id === block.taskId);
                     const color = block.colorSnapshot ?? course?.color ?? "#10b981";
+                    const minAllowedMinutes = getMinimumAllowedMinutesForDate(date);
+                    const timelineMaxMinutes = (timelineHours[timelineHours.length - 1] + 1) * 60;
                     return (
-                      <button
+                      <WorkBlockCard
                         key={`wb-${block.id}`}
-                        type="button"
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          const minAllowedMinutes = getMinimumAllowedMinutesForDate(date);
-                          if (minAllowedMinutes >= (timelineHours[timelineHours.length - 1] + 1) * 60) return;
-                          setDraggingWorkBlock({ id: block.id, durationMinutes: endM - startM });
-                          setWorkBlockDragPreview({
-                            id: block.id,
-                            startMinutes: startM,
-                            endMinutes: endM,
-                            dateKey: key
-                          });
+                        block={block}
+                        variant="week"
+                        top={top}
+                        height={height}
+                        startMinutes={startM}
+                        endMinutes={endM}
+                        color={color}
+                        linkedTaskTitle={linkedTask?.title}
+                        minAllowedMinutes={minAllowedMinutes}
+                        timelineMaxMinutes={timelineMaxMinutes}
+                        dateKey={key}
+                        onDragStart={(info) => {
+                          setDraggingWorkBlock({ id: info.id, durationMinutes: info.durationMinutes });
+                          setWorkBlockDragPreview({ id: info.id, startMinutes: info.startMinutes, endMinutes: info.endMinutes, dateKey: info.dateKey });
                         }}
-                        onDoubleClick={() => setActiveWorkBlockId(block.id)}
-                        className={`absolute left-[8px] right-[8px] z-[11] flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden rounded-2xl border text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_10px_24px_rgba(0,0,0,0.25)] ${
-                          isCompactBlock ? "px-3 py-1.5" : "px-3 py-2"
-                        }`}
-                        style={{
-                          ...softCourseStyle(color),
-                          top,
-                          height,
-                          borderColor: `${color}55`
+                        onDoubleClick={setActiveWorkBlockId}
+                        onResizeEdge={(edge, start, end) => {
+                          setResizingWorkBlock({ id: block.id, edge, startMinutes: start, endMinutes: end, dateKey: key });
+                          setWorkBlockResizePreview({ id: block.id, startMinutes: edge === "start" ? Math.max(start, minAllowedMinutes) : start, endMinutes: end, dateKey: key });
                         }}
-                      >
-                        <p
-                          className={`min-w-0 max-w-full break-words font-semibold leading-tight text-slate-900 line-clamp-2 dark:text-white ${isCompactBlock ? "text-[11px]" : "text-xs"}`}
-                        >
-                          {linkedTask?.title ?? block.titleSnapshot ?? "Work block"}
-                        </p>
-                        <p
-                          dir="ltr"
-                          className={`min-w-0 max-w-full text-[11px] leading-tight text-slate-600 dark:text-white/90 ${isCompactBlock ? "" : "mt-0.5"}`}
-                        >
-                          {new Date(block.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} -{" "}
-                          {new Date(block.endAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </p>
-                        <span
-                          className={`absolute left-3 right-3 top-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactBlock ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            const minAllowedMinutes = getMinimumAllowedMinutesForDate(date);
-                            if (minAllowedMinutes >= (timelineHours[timelineHours.length - 1] + 1) * 60) return;
-                            setResizingWorkBlock({
-                              id: block.id,
-                              edge: "start",
-                              startMinutes: startM,
-                              endMinutes: endM,
-                              dateKey: key
-                            });
-                            setWorkBlockResizePreview({
-                              id: block.id,
-                              startMinutes: Math.max(startM, minAllowedMinutes),
-                              endMinutes: endM,
-                              dateKey: key
-                            });
-                          }}
-                        />
-                        <span
-                          className={`absolute left-3 right-3 bottom-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactBlock ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            const minAllowedMinutes = getMinimumAllowedMinutesForDate(date);
-                            if (minAllowedMinutes >= (timelineHours[timelineHours.length - 1] + 1) * 60) return;
-                            setResizingWorkBlock({
-                              id: block.id,
-                              edge: "end",
-                              startMinutes: startM,
-                              endMinutes: endM,
-                              dateKey: key
-                            });
-                            setWorkBlockResizePreview({
-                              id: block.id,
-                              startMinutes: startM,
-                              endMinutes: endM,
-                              dateKey: key
-                            });
-                          }}
-                        />
-                      </button>
+                      />
                     );
                   })}
                   {(() => {
@@ -7904,169 +7710,29 @@ function CalendarView({
                     const endMinutes = Math.max(rawStart, rawEnd);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * dayHourHeight);
-                    const isUltraCompact = height < 48;
-                    const isCompactSession = height < 70;
-                    const isPrivateSession = session.course.id === PERSONAL_EVENTS_COURSE_ID;
-                    const privateTitle = session.meeting.title?.trim() || "New session";
-                    const meetingTitle = session.meeting.title?.trim();
-                    const sessionPrimaryTitle = isPrivateSession
-                      ? privateTitle
-                      : meetingTitle || session.course.name;
-                    const sessionSecondaryTitle = isPrivateSession
-                      ? "Private"
-                      : meetingTitle
-                        ? session.course.name
-                        : session.meeting.title || formatSessionType(session.meeting.type);
-                    const overlapStepPct = session.totalColumns > 1 ? Math.min(10, 100 / (session.totalColumns * 2)) : 0;
-                    const overlapWidthPct = session.totalColumns > 1 ? 100 - overlapStepPct * (session.totalColumns - 1) : 100;
-                    const isFreshlyAddedCourse = newlyAddedCourseId === session.course.id;
                     return (
-                      <button
-                        type="button"
+                      <SessionCard
                         key={session.instanceKey}
-                        data-calendar-interactive="true"
-                        draggable
-                        onMouseDown={(event) => {
-                          // Prevent empty-grid drag-create handlers from firing when interacting with an existing session.
-                          event.stopPropagation();
+                        session={session}
+                        variant="day"
+                        top={top}
+                        height={height}
+                        startMinutes={startMinutes}
+                        endMinutes={endMinutes}
+                        sessionDateKey={sessionDateKey}
+                        minAllowedMinutes={getMinimumAllowedMinutesForDate(selectedDate)}
+                        selectedSession={selectedSession as CalendarSelectedSession | null}
+                        newlyAddedCourseId={newlyAddedCourseId}
+                        onSessionClick={onSessionClick}
+                        onSessionDoubleClick={onSessionDoubleClick}
+                        onOpenQuickEditor={openQuickEditorForSession}
+                        onDragStart={(info: SessionDragInfo) => setDraggingSession(info)}
+                        onDragEnd={() => { setDraggingSession(null); setDragPreview(null); }}
+                        onResizeEdge={(edge, safeStart, end) => {
+                          setResizingSession({ courseId: session.course.id, meetingId: session.meeting.id!, edge, startMinutes: safeStart, endMinutes: end, dateKey: sessionDateKey });
+                          setSessionResizePreview({ courseId: session.course.id, meetingId: session.meeting.id!, startMinutes: safeStart, endMinutes: end, dateKey: sessionDateKey });
                         }}
-                        onDragStart={(event) => {
-                          const durationMinutes = Math.max(
-                            30,
-                            Math.round(Math.abs(parseTimeValue(session.meeting.end) - parseTimeValue(session.meeting.start)) * 60)
-                          );
-                          const rect = event.currentTarget.getBoundingClientRect();
-                          const grabOffsetRatio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0;
-                          setDraggingSession({
-                            courseId: session.course.id,
-                            meetingId: session.meeting.id!,
-                            durationMinutes,
-                            grabOffsetRatio: Math.max(0, Math.min(1, grabOffsetRatio)),
-                            sourceDate: session.date
-                          });
-                          event.dataTransfer.effectAllowed = "move";
-                          event.dataTransfer.setData("text/plain", session.meeting.id!);
-                        }}
-                        onDragEnd={() => {
-                          setDraggingSession(null);
-                          setDragPreview(null);
-                        }}
-                        onClick={() => onSessionClick(session.course.id, session.meeting.id!, session.date)}
-                        onDoubleClick={(event) => {
-                          onSessionDoubleClick?.(session.course.id, session.meeting.id!, session.date);
-                          openQuickEditorForSession(
-                            session.course,
-                            session.meeting,
-                            session.date,
-                            event.currentTarget.getBoundingClientRect()
-                          );
-                        }}
-                        dir="auto"
-                        className={`absolute flex min-h-0 min-w-0 overflow-hidden rounded-[22px] border text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)] ${
-                          isUltraCompact ? "flex-row items-center gap-1 px-2 py-0" : isCompactSession ? "flex-col gap-0 px-3 py-1.5" : "flex-col gap-0.5 px-4 py-3"
-                        }`}
-                        style={{
-                          ...softCourseStyle(session.course.color),
-                          top,
-                          height,
-                          borderColor:
-                            selectedSession?.courseId === session.course.id &&
-                            selectedSession?.meetingId === session.meeting.id &&
-                            sameCalendarDate(selectedSession.anchorDate, session.date)
-                              ? "rgba(250,204,21,0.72)"
-                              : `${session.course.color}50`,
-                          left: `calc(${session.column * overlapStepPct}% + 8px)`,
-                          width: `calc(${overlapWidthPct}% - 16px)`,
-                          zIndex: 10 + session.column,
-                          boxShadow:
-                            selectedSession?.courseId === session.course.id &&
-                            selectedSession?.meetingId === session.meeting.id &&
-                            sameCalendarDate(selectedSession.anchorDate, session.date)
-                              ? "0 0 0 1px rgba(250,204,21,0.55), 0 0 14px rgba(250,204,21,0.20), 0 10px 28px rgba(15,23,42,0.08)"
-                              : isFreshlyAddedCourse
-                                ? "0 0 0 1px rgba(34,197,94,0.45), 0 0 18px rgba(16,185,129,0.26), 0 10px 28px rgba(15,23,42,0.08)"
-                                : undefined
-                        }}
-                      >
-                        {isUltraCompact ? (
-                          <p dir="auto" className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-none text-slate-900 dark:text-white">
-                            {sessionPrimaryTitle}
-                          </p>
-                        ) : (
-                          <>
-                            <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
-                              isCompactSession ? "text-[12px] leading-[14px] line-clamp-1" : "text-sm leading-tight line-clamp-2"
-                            }`}>
-                              {sessionPrimaryTitle}
-                            </p>
-                            {!isCompactSession && (
-                              <p className="min-w-0 max-w-full break-words text-xs leading-tight text-slate-700 line-clamp-2 dark:text-white/95">
-                                {sessionSecondaryTitle}
-                              </p>
-                            )}
-                            <p
-                              dir="ltr"
-                              className={`min-w-0 max-w-full text-slate-700 dark:text-white/90 ${
-                                isCompactSession ? "text-[10px] leading-[12px]" : "text-xs leading-tight"
-                              }`}
-                            >
-                              {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
-                            </p>
-                            {!isCompactSession && session.meeting.location && (
-                              <p className="min-w-0 max-w-full break-words text-xs leading-snug text-slate-700 line-clamp-2 dark:text-white/90">
-                                {session.meeting.location}
-                              </p>
-                            )}
-                          </>
-                        )}
-                        <span
-                          className={`absolute left-3 right-3 top-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactSession ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            const minAllowedMinutes = getMinimumAllowedMinutesForDate(selectedDate);
-                            const safeStart = Math.max(startMinutes, minAllowedMinutes);
-                            if (safeStart >= endMinutes - 15) return;
-                            setResizingSession({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              edge: "start",
-                              startMinutes: safeStart,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                            setSessionResizePreview({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              startMinutes: safeStart,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                          }}
-                        />
-                        <span
-                          className={`absolute left-3 right-3 bottom-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactSession ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            setResizingSession({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              edge: "end",
-                              startMinutes,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                            setSessionResizePreview({
-                              courseId: session.course.id,
-                              meetingId: session.meeting.id!,
-                              startMinutes,
-                              endMinutes,
-                              dateKey: sessionDateKey
-                            });
-                          }}
-                        />
-                      </button>
+                      />
                     );
                   })}
                   {selectedDayWorkBlocks.map((block) => {
@@ -8080,96 +7746,36 @@ function CalendarView({
                     const endMinutes = Math.max(rawStartB, rawEndB);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * dayHourHeight);
-                    const isCompactBlock = height < 68;
                     const course = courseMap[block.courseId as string];
                     const linkedTask = tasks.find((task) => task.id === block.taskId);
                     const color = block.colorSnapshot ?? course?.color ?? "#10b981";
+                    const minAllowedMinutes = getMinimumAllowedMinutesForDate(selectedDate);
+                    const timelineMaxMinutes = (timelineHours[timelineHours.length - 1] + 1) * 60;
+                    const dayDateKey = formatDateKey(selectedDate);
                     return (
-                      <button
+                      <WorkBlockCard
                         key={block.id}
-                        type="button"
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          const minAllowedMinutes = getMinimumAllowedMinutesForDate(selectedDate);
-                          if (minAllowedMinutes >= (timelineHours[timelineHours.length - 1] + 1) * 60) return;
-                          setDraggingWorkBlock({ id: block.id, durationMinutes: endMinutes - startMinutes });
-                          setWorkBlockDragPreview({
-                            id: block.id,
-                            startMinutes,
-                            endMinutes,
-                            dateKey: formatDateKey(selectedDate)
-                          });
+                        block={block}
+                        variant="day"
+                        top={top}
+                        height={height}
+                        startMinutes={startMinutes}
+                        endMinutes={endMinutes}
+                        color={color}
+                        linkedTaskTitle={linkedTask?.title}
+                        minAllowedMinutes={minAllowedMinutes}
+                        timelineMaxMinutes={timelineMaxMinutes}
+                        dateKey={dayDateKey}
+                        onDragStart={(info) => {
+                          setDraggingWorkBlock({ id: info.id, durationMinutes: info.durationMinutes });
+                          setWorkBlockDragPreview({ id: info.id, startMinutes: info.startMinutes, endMinutes: info.endMinutes, dateKey: info.dateKey });
                         }}
-                        onDoubleClick={() => setActiveWorkBlockId(block.id)}
-                        className={`absolute flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden rounded-[22px] border text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)] ${
-                          isCompactBlock ? "px-3 py-1.5" : "px-4 py-3"
-                        }`}
-                        style={{
-                          ...softCourseStyle(color),
-                          top,
-                          height,
-                          borderColor: `${color}55`,
-                          left: "10px",
-                          width: "calc(100% - 20px)"
+                        onDoubleClick={setActiveWorkBlockId}
+                        onResizeEdge={(edge, start, end) => {
+                          setResizingWorkBlock({ id: block.id, edge, startMinutes: start, endMinutes: end, dateKey: dayDateKey });
+                          setWorkBlockResizePreview({ id: block.id, startMinutes: edge === "start" ? Math.max(start, minAllowedMinutes) : start, endMinutes: end, dateKey: dayDateKey });
                         }}
-                      >
-                        <p
-                          className={`min-w-0 max-w-full break-words font-semibold leading-tight text-slate-900 line-clamp-2 dark:text-white ${isCompactBlock ? "text-xs" : "text-sm"}`}
-                        >
-                          {linkedTask?.title ?? block.titleSnapshot ?? "Work block"}
-                        </p>
-                        <p
-                          dir="ltr"
-                          className={`min-w-0 max-w-full leading-tight text-slate-700 dark:text-white/90 ${isCompactBlock ? "text-[11px]" : "text-xs"}`}
-                        >
-                          {new Date(block.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - {new Date(block.endAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </p>
-                        <span
-                          className={`absolute left-3 right-3 top-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactBlock ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            const minAllowedMinutes = getMinimumAllowedMinutesForDate(selectedDate);
-                            if (minAllowedMinutes >= (timelineHours[timelineHours.length - 1] + 1) * 60) return;
-                            setResizingWorkBlock({
-                              id: block.id,
-                              edge: "start",
-                              startMinutes,
-                              endMinutes,
-                              dateKey: formatDateKey(selectedDate)
-                            });
-                            setWorkBlockResizePreview({
-                              id: block.id,
-                              startMinutes: Math.max(startMinutes, minAllowedMinutes),
-                              endMinutes,
-                              dateKey: formatDateKey(selectedDate)
-                            });
-                          }}
-                        />
-                        <span
-                          className={`absolute left-3 right-3 bottom-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactBlock ? "h-1" : ""}`}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            const minAllowedMinutes = getMinimumAllowedMinutesForDate(selectedDate);
-                            if (minAllowedMinutes >= (timelineHours[timelineHours.length - 1] + 1) * 60) return;
-                            setResizingWorkBlock({
-                              id: block.id,
-                              edge: "end",
-                              startMinutes,
-                              endMinutes,
-                              dateKey: formatDateKey(selectedDate)
-                            });
-                            setWorkBlockResizePreview({
-                              id: block.id,
-                              startMinutes,
-                              endMinutes,
-                              dateKey: formatDateKey(selectedDate)
-                            });
-                          }}
-                        />
-                      </button>
+                      />
                     );
                   })}
                   {sameCalendarDate(selectedDate, today) && currentTimeTopDay !== null && (
@@ -9916,23 +9522,6 @@ function SessionEditorModal({
   );
 }
 
-function formatHourMinutes(totalMinutes: number): string {
-  const safeMinutes = Math.max(0, Math.round(totalMinutes));
-  const hours = Math.floor(safeMinutes / 60);
-  const minutes = safeMinutes % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
-
-function softCourseStyle(color: string): CSSProperties {
-  return {
-    background: `linear-gradient(135deg, ${color}38, ${color}20)`,
-    boxShadow: `0 0 0 1px ${color}42, 0 10px 26px ${color}24, inset 0 1px 0 rgba(255,255,255,0.35)`
-  };
-}
-
-function sameCalendarDate(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-}
 
 /** `data-week-column` value (YYYY-MM-DD) under the pointer, for week-view work blocks. */
 function resolveWeekColumnKeyFromPoint(clientX: number, clientY: number): string | null {
