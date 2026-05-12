@@ -520,7 +520,10 @@ type CalendarUndoEntry =
   | { type: "replace-course"; course: Course }
   | { type: "delete-work-block"; id: string }
   | { type: "replace-work-block"; block: WorkBlock }
-  | { type: "insert-work-block"; block: WorkBlock };
+  | { type: "insert-work-block"; block: WorkBlock }
+  | { type: "replace-personal-event"; event: PersonalEvent }
+  | { type: "delete-personal-event"; id: string }
+  | { type: "restore-split-personal-event"; original: PersonalEvent; detachedId: string };
 
 type TaskUndoEntry =
   | {
@@ -834,6 +837,16 @@ export function SchoolOS() {
       case "insert-work-block":
         dispatch({ type: "insert-work-block", payload: previous.block });
         return;
+      case "replace-personal-event":
+        dispatch({ type: "update-personal-event", payload: previous.event });
+        return;
+      case "delete-personal-event":
+        dispatch({ type: "delete-personal-event", payload: previous.id });
+        return;
+      case "restore-split-personal-event":
+        dispatch({ type: "delete-personal-event", payload: previous.detachedId });
+        dispatch({ type: "update-personal-event", payload: previous.original });
+        return;
       default:
         return;
     }
@@ -846,6 +859,25 @@ export function SchoolOS() {
     }
     dispatch({ type: "update-course", payload: course });
   }, [dispatch, pushCalendarUndoEntry, state.courses]);
+
+  const updatePersonalEventWithUndo = useCallback((event: Partial<PersonalEvent> & { id: string }) => {
+    const previous = (state.personalEvents ?? []).find((e) => e.id === event.id);
+    if (previous) {
+      pushCalendarUndoEntry({ type: "replace-personal-event", event: previous });
+    }
+    dispatch({ type: "update-personal-event", payload: event });
+  }, [dispatch, pushCalendarUndoEntry, state.personalEvents]);
+
+  const addPersonalEventWithUndo = useCallback((event: Omit<PersonalEvent, "createdAt" | "updatedAt">) => {
+    pushCalendarUndoEntry({ type: "delete-personal-event", id: event.id });
+    dispatch({ type: "add-personal-event", payload: event });
+  }, [dispatch, pushCalendarUndoEntry]);
+
+  const splitPersonalEventWithUndo = useCallback((original: PersonalEvent, detachedId: string, updatedOriginal: Partial<PersonalEvent> & { id: string }, newEvent: Omit<PersonalEvent, "createdAt" | "updatedAt">) => {
+    pushCalendarUndoEntry({ type: "restore-split-personal-event", original, detachedId });
+    dispatch({ type: "update-personal-event", payload: updatedOriginal });
+    dispatch({ type: "add-personal-event", payload: newEvent });
+  }, [dispatch, pushCalendarUndoEntry]);
 
   const addWorkBlockWithUndo = useCallback((block: Omit<WorkBlock, "id" | "createdAt">) => {
     const id = createId("block");
@@ -3387,9 +3419,10 @@ export function SchoolOS() {
               }
               onUpdateCourse={updateCourseWithUndo}
               onAddCourse={addCourse}
-              onAddPersonalEvent={(event) => dispatch({ type: "add-personal-event", payload: event })}
-              onUpdatePersonalEvent={(event) => dispatch({ type: "update-personal-event", payload: event })}
+              onAddPersonalEvent={addPersonalEventWithUndo}
+              onUpdatePersonalEvent={updatePersonalEventWithUndo}
               onDeletePersonalEvent={(id) => dispatch({ type: "delete-personal-event", payload: id })}
+              onSplitPersonalEvent={splitPersonalEventWithUndo}
               onAddWorkBlock={addWorkBlockWithUndo}
               onUpdateWorkBlock={updateWorkBlockWithUndo}
               onDeleteWorkBlock={deleteWorkBlockWithUndo}
@@ -5482,6 +5515,7 @@ function CalendarView({
   onAddPersonalEvent,
   onUpdatePersonalEvent,
   onDeletePersonalEvent,
+  onSplitPersonalEvent,
   onAddWorkBlock,
   onUpdateWorkBlock,
   onDeleteWorkBlock,
@@ -5526,6 +5560,7 @@ function CalendarView({
   onAddPersonalEvent: (event: Omit<PersonalEvent, "createdAt" | "updatedAt">) => void;
   onUpdatePersonalEvent: (event: Partial<PersonalEvent> & { id: string }) => void;
   onDeletePersonalEvent: (id: string) => void;
+  onSplitPersonalEvent: (original: PersonalEvent, detachedId: string, updatedOriginal: Partial<PersonalEvent> & { id: string }, newEvent: Omit<PersonalEvent, "createdAt" | "updatedAt">) => void;
   onAddWorkBlock: (block: Omit<WorkBlock, "id" | "createdAt">) => void;
   onUpdateWorkBlock: (block: Partial<WorkBlock> & { id: string }) => void;
   onDeleteWorkBlock: (id: string) => void;
@@ -5910,17 +5945,22 @@ function CalendarView({
       const sourceKey = formatDateKey(sourceDate);
       const baseRecurrence = evt.recurrence ?? { cadence: "weekly" as const, interval: 1, daysOfWeek: [evt.day] };
       const nextExceptions = Array.from(new Set([...(baseRecurrence.exceptions ?? []), sourceKey]));
-      onUpdatePersonalEvent({ id: evt.id, recurrence: { ...baseRecurrence, exceptions: nextExceptions } });
-      onAddPersonalEvent({
-        id: createId("pevt"),
-        title: evt.title,
-        color: evt.color,
-        day: nextDay,
-        start: formatHourMinutes(startMinutes),
-        end: formatHourMinutes(startMinutes + duration * 60),
-        anchorDate: new Date(`${formatDateKey(targetDate)}T12:00:00`).toISOString(),
-        recurrence: { cadence: "none", interval: 1 }
-      });
+      const detachedId = createId("pevt");
+      onSplitPersonalEvent(
+        evt,
+        detachedId,
+        { id: evt.id, recurrence: { ...baseRecurrence, exceptions: nextExceptions } },
+        {
+          id: detachedId,
+          title: evt.title,
+          color: evt.color,
+          day: nextDay,
+          start: formatHourMinutes(startMinutes),
+          end: formatHourMinutes(startMinutes + duration * 60),
+          anchorDate: new Date(`${formatDateKey(targetDate)}T12:00:00`).toISOString(),
+          recurrence: { cadence: "none", interval: 1 }
+        }
+      );
       return;
     }
     const course = courses.find((item) => item.id === courseId);
@@ -6967,6 +7007,7 @@ function CalendarView({
                     const endMinutes = Math.max(rawStart, rawEnd);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * WEEK_TIMELINE_ROW_PX);
+                    const isUltraCompact = height < 48;
                     const isCompactSession = height < 70;
                     const isPrivateSession = session.course.id === PERSONAL_EVENTS_COURSE_ID;
                     const privateTitle = session.meeting.title?.trim() || "New session";
@@ -7024,7 +7065,7 @@ function CalendarView({
                           );
                         }}
                         dir="auto"
-                        className="absolute flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden rounded-2xl border px-3 py-2 text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity"
+                        className={`absolute flex min-h-0 min-w-0 overflow-hidden rounded-2xl border text-start text-xs shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition-opacity ${isUltraCompact ? "flex-row items-center gap-1 px-2 py-0" : "flex-col gap-0.5 px-3 py-2"}`}
                         style={{
                           ...softCourseStyle(session.course.color),
                           top,
@@ -7049,28 +7090,36 @@ function CalendarView({
                                 : undefined
                         }}
                       >
-                        <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
-                          isCompactSession ? "text-[11px] leading-[13px] line-clamp-1" : "leading-tight line-clamp-2"
-                        }`}>
-                          {sessionPrimaryTitle}
-                        </p>
-                        {!isCompactSession && (
-                          <p className="min-w-0 max-w-full break-words line-clamp-2 leading-tight text-slate-700 dark:text-white/95">
-                            {sessionSecondaryTitle}
+                        {isUltraCompact ? (
+                          <p dir="auto" className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-none text-slate-900 dark:text-white">
+                            {sessionPrimaryTitle}
                           </p>
-                        )}
-                        <p
-                          dir="ltr"
-                          className={`mt-0.5 min-w-0 max-w-full text-slate-600 dark:text-white/90 ${
-                            isCompactSession ? "text-[10px] leading-[12px]" : "text-[11px] leading-tight"
-                          }`}
-                        >
-                          {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
-                        </p>
-                        {session.meeting.location && height >= 110 && (
-                          <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-slate-600 dark:text-white/90">
-                            {session.meeting.location}
-                          </p>
+                        ) : (
+                          <>
+                            <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
+                              isCompactSession ? "text-[11px] leading-[13px] line-clamp-1" : "leading-tight line-clamp-2"
+                            }`}>
+                              {sessionPrimaryTitle}
+                            </p>
+                            {!isCompactSession && (
+                              <p className="min-w-0 max-w-full break-words line-clamp-2 leading-tight text-slate-700 dark:text-white/95">
+                                {sessionSecondaryTitle}
+                              </p>
+                            )}
+                            <p
+                              dir="ltr"
+                              className={`mt-0.5 min-w-0 max-w-full text-slate-600 dark:text-white/90 ${
+                                isCompactSession ? "text-[10px] leading-[12px]" : "text-[11px] leading-tight"
+                              }`}
+                            >
+                              {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
+                            </p>
+                            {session.meeting.location && height >= 110 && (
+                              <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-slate-600 dark:text-white/90">
+                                {session.meeting.location}
+                              </p>
+                            )}
+                          </>
                         )}
                         <span
                           className={`absolute left-2 right-2 top-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactSession ? "h-1" : ""}`}
@@ -7856,6 +7905,7 @@ function CalendarView({
                     const endMinutes = Math.max(rawStart, rawEnd);
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * dayHourHeight);
+                    const isUltraCompact = height < 48;
                     const isCompactSession = height < 70;
                     const isPrivateSession = session.course.id === PERSONAL_EVENTS_COURSE_ID;
                     const privateTitle = session.meeting.title?.trim() || "New session";
@@ -7913,8 +7963,8 @@ function CalendarView({
                           );
                         }}
                         dir="auto"
-                        className={`absolute flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[22px] border text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)] ${
-                          isCompactSession ? "gap-0 px-3 py-1.5" : "gap-0.5 px-4 py-3"
+                        className={`absolute flex min-h-0 min-w-0 overflow-hidden rounded-[22px] border text-start shadow-[0_10px_28px_rgba(15,23,42,0.08)] ${
+                          isUltraCompact ? "flex-row items-center gap-1 px-2 py-0" : isCompactSession ? "flex-col gap-0 px-3 py-1.5" : "flex-col gap-0.5 px-4 py-3"
                         }`}
                         style={{
                           ...softCourseStyle(session.course.color),
@@ -7939,28 +7989,36 @@ function CalendarView({
                                 : undefined
                         }}
                       >
-                        <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
-                          isCompactSession ? "text-[12px] leading-[14px] line-clamp-1" : "text-sm leading-tight line-clamp-2"
-                        }`}>
-                          {sessionPrimaryTitle}
-                        </p>
-                        {!isCompactSession && (
-                          <p className="min-w-0 max-w-full break-words text-xs leading-tight text-slate-700 line-clamp-2 dark:text-white/95">
-                            {sessionSecondaryTitle}
+                        {isUltraCompact ? (
+                          <p dir="auto" className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-none text-slate-900 dark:text-white">
+                            {sessionPrimaryTitle}
                           </p>
-                        )}
-                        <p
-                          dir="ltr"
-                          className={`min-w-0 max-w-full text-slate-700 dark:text-white/90 ${
-                            isCompactSession ? "text-[10px] leading-[12px]" : "text-xs leading-tight"
-                          }`}
-                        >
-                          {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
-                        </p>
-                        {!isCompactSession && session.meeting.location && (
-                          <p className="min-w-0 max-w-full break-words text-xs leading-snug text-slate-700 line-clamp-2 dark:text-white/90">
-                            {session.meeting.location}
-                          </p>
+                        ) : (
+                          <>
+                            <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
+                              isCompactSession ? "text-[12px] leading-[14px] line-clamp-1" : "text-sm leading-tight line-clamp-2"
+                            }`}>
+                              {sessionPrimaryTitle}
+                            </p>
+                            {!isCompactSession && (
+                              <p className="min-w-0 max-w-full break-words text-xs leading-tight text-slate-700 line-clamp-2 dark:text-white/95">
+                                {sessionSecondaryTitle}
+                              </p>
+                            )}
+                            <p
+                              dir="ltr"
+                              className={`min-w-0 max-w-full text-slate-700 dark:text-white/90 ${
+                                isCompactSession ? "text-[10px] leading-[12px]" : "text-xs leading-tight"
+                              }`}
+                            >
+                              {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
+                            </p>
+                            {!isCompactSession && session.meeting.location && (
+                              <p className="min-w-0 max-w-full break-words text-xs leading-snug text-slate-700 line-clamp-2 dark:text-white/90">
+                                {session.meeting.location}
+                              </p>
+                            )}
+                          </>
                         )}
                         <span
                           className={`absolute left-3 right-3 top-0.5 h-1.5 cursor-ns-resize rounded-full bg-white/20 opacity-0 transition-opacity hover:opacity-100 ${isCompactSession ? "h-1" : ""}`}
