@@ -11,6 +11,11 @@ import { SchoolStoreProvider } from "@/lib/store";
 import type { Store } from "@/lib/types";
 import { getSupabaseClient } from "@/lib/supabase";
 
+/**
+ * Authenticated users get `SupabaseStateStore`: one JSON `SchoolState` row per user in Supabase
+ * (`user_states`). That is the durable source of truth for courses/tasks/etc. Unauthenticated /
+ * auth-off builds use browser `localStorage` only (`LocalStorageStore`).
+ */
 export function DashboardShell() {
   const { enabled, loading, user } = useAuth();
 

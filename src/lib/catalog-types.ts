@@ -32,3 +32,12 @@ export interface CatalogSearchCourse {
   roadmapSectionLabel?: string;
   meetings: CatalogSearchMeeting[];
 }
+
+/** Cached HUJI degree roadmap from catalog import (persists in `SchoolState`). */
+export interface SavedDegreeRoadmap {
+  degreeId: string;
+  roadmapCode: string;
+  label: string;
+  loadedAt: string;
+  courses: CatalogSearchCourse[];
+}

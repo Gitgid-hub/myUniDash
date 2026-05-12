@@ -9,4 +9,6 @@ pnpm-debug.log*
 .env*
 .vercel
 .cursor/
+# Cursor / Claude agent: per-machine memory and isolated git worktree copies (not app source)
+.claude/
 *.tsbuildinfo

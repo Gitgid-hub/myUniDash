@@ -97,6 +97,7 @@ import { taskComparator } from "@/lib/task-comparator";
 import type { FeatureRequestItem } from "@/lib/feature-request-item";
 import { SchoolOsLayout } from "@/components/school-os/school-os-layout";
 import { CatalogImportModal } from "@/components/school-os/catalog-import-modal";
+import { CatalogBookingRail } from "@/components/school-os/catalog-booking-rail";
 import {
   LazyCalendarView,
   LazyClassNotesPanel,
@@ -316,11 +317,9 @@ export function SchoolOS() {
     loadPostSessionPromptDismissedKeys().forEach((k) => promptedPostSessionRef.current.add(k));
   }, []);
   const [visibleCourseIds, setVisibleCourseIds] = useState<string[]>([]);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
   const degreePicker = useCatalogDegreePicker({
     isSettingsOpen,
-    isCatalogPickerOpen,
-    setCatalogError
+    isCatalogPickerOpen
   });
   const {
     catalogDegreeSearchQuery,
@@ -569,11 +568,11 @@ export function SchoolOS() {
     setCatalogDegree,
     setCatalogDegreeSearchQuery,
     setIsCatalogDegreeOptionsOpen,
-    setCatalogError,
     isCatalogPickerOpen,
     onboardingActive: onboardingTour.onboardingActive,
     markDegreeRoadmapStale: onboardingTour.markDegreeRoadmapStale,
-    setOnboardingRoadmapLoaded: onboardingTour.setOnboardingRoadmapLoaded
+    setOnboardingRoadmapLoaded: onboardingTour.setOnboardingRoadmapLoaded,
+    savedDegreeRoadmaps: state.savedDegreeRoadmaps ?? []
   });
   catalogRetreatFnsRef.current = {
     reset: () => {
@@ -586,17 +585,25 @@ export function SchoolOS() {
     catalogQuery,
     setCatalogQuery,
     catalogLoading,
-    catalogRefreshing,
     catalogResults,
-    catalogFreshness,
-    catalogImportingId,
     catalogDegreeImporting,
     catalogViewMode,
-    refreshCatalog,
-    importCatalogCourse,
     importFullDegreePlan,
     selectCatalogDegreeOption,
-    groupedRoadmapCourses
+    loadSelectedDegreeRoadmap,
+    selectSavedRoadmap,
+    removeSavedRoadmap,
+    groupedRoadmapCourses,
+    catalogBookingQueue,
+    toggleCatalogCourseForBooking,
+    isCatalogCourseQueued,
+    isCatalogCourseOwned,
+    beginBookCatalogCourses,
+    catalogBookingFlowOpen,
+    catalogBookingSessionBooked,
+    catalogBookingBusyId,
+    bookQueuedCatalogCourse,
+    dismissCatalogBookingFlow
   } = catalogImport;
 
   const {
@@ -2126,61 +2133,78 @@ export function SchoolOS() {
             </div>
           )}
           {state.ui.activeView === "calendar" && (
-            <Suspense fallback={<SchoolOsViewSuspenseFallback />}>
-              <LazyCalendarView
-              tasks={state.tasks}
-              workBlocks={state.workBlocks}
-              courses={activeCourses}
-              personalEvents={state.personalEvents ?? []}
-              mode={calendarMode}
-              onMode={setCalendarMode}
-              selectedDate={selectedCalendarDate}
-              onSelectDate={setSelectedCalendarDate}
-              visibleCourseIds={visibleCourseIds}
-              onSessionClick={handleCalendarSessionClick}
-              onSessionDoubleClick={handleCalendarSessionDoubleClick}
-              onClearSessionSelection={() => setSelectedCalendarSession(null)}
-              selectedSession={
-                selectedCalendarSession
-                  ? {
-                      courseId: selectedCalendarSession.courseId,
-                      meetingId: selectedCalendarSession.meetingId,
-                      anchorDate: selectedCalendarSession.anchorDate
-                    }
-                  : undefined
-              }
-              onUpdateCourse={updateCourseWithUndo}
-              onAddCourse={addCourse}
-              onAddPersonalEvent={addPersonalEventWithUndo}
-              onUpdatePersonalEvent={updatePersonalEventWithUndo}
-              onDeletePersonalEvent={(id) => dispatch({ type: "delete-personal-event", payload: id })}
-              onSplitPersonalEvent={splitPersonalEventWithUndo}
-              onAddWorkBlock={addWorkBlockWithUndo}
-              onUpdateWorkBlock={updateWorkBlockWithUndo}
-              onDeleteWorkBlock={deleteWorkBlockWithUndo}
-              onOpenTask={handleFocusTask}
-              tentativeOptions={tentativeCalendarOptions}
-              tentativeChoiceTitle={activeChoiceSet?.label}
-              onPickTentativeOption={selectTentativeCalendarOption}
-              newlyAddedCourseId={onboardingCourseGlowId}
-              onOpenWeeklyCatchUp={weeklyCatchUp.onOpenWeeklyCatchUpFromCalendar}
-              onAppleCalendarSync={handleOpenCalendarSync}
-              onOpenTabGuide={() => openTabGuide("calendar")}
-              catchUpOwnerToolbar={
-                isAdmin ? (
-                  <Button
-                    variant="outline"
-                    className="h-8 shrink-0 text-xs"
-                    type="button"
-                    title="QA: clears prior demo catch-up tasks, then opens a fixed Sun–Thu week (virtual date in src/lib/demo-weekly-catchup.ts). Real Weekly catch-up still uses actual time. Demo tasks are removed when you leave Kanban or close this modal."
-                    onClick={weeklyCatchUp.onDemoWeeklyCatchUp}
-                  >
-                    Demo catch-up
-                  </Button>
-                ) : null
-              }
-              />
-            </Suspense>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-row gap-3 overflow-hidden">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                <Suspense fallback={<SchoolOsViewSuspenseFallback />}>
+                  <LazyCalendarView
+                  tasks={state.tasks}
+                  workBlocks={state.workBlocks}
+                  courses={activeCourses}
+                  personalEvents={state.personalEvents ?? []}
+                  mode={calendarMode}
+                  onMode={setCalendarMode}
+                  selectedDate={selectedCalendarDate}
+                  onSelectDate={setSelectedCalendarDate}
+                  visibleCourseIds={visibleCourseIds}
+                  onSessionClick={handleCalendarSessionClick}
+                  onSessionDoubleClick={handleCalendarSessionDoubleClick}
+                  onClearSessionSelection={() => setSelectedCalendarSession(null)}
+                  selectedSession={
+                    selectedCalendarSession
+                      ? {
+                          courseId: selectedCalendarSession.courseId,
+                          meetingId: selectedCalendarSession.meetingId,
+                          anchorDate: selectedCalendarSession.anchorDate
+                        }
+                      : undefined
+                  }
+                  onUpdateCourse={updateCourseWithUndo}
+                  onAddCourse={addCourse}
+                  onAddPersonalEvent={addPersonalEventWithUndo}
+                  onUpdatePersonalEvent={updatePersonalEventWithUndo}
+                  onDeletePersonalEvent={(id) => dispatch({ type: "delete-personal-event", payload: id })}
+                  onSplitPersonalEvent={splitPersonalEventWithUndo}
+                  onAddWorkBlock={addWorkBlockWithUndo}
+                  onUpdateWorkBlock={updateWorkBlockWithUndo}
+                  onDeleteWorkBlock={deleteWorkBlockWithUndo}
+                  onOpenTask={handleFocusTask}
+                  tentativeOptions={tentativeCalendarOptions}
+                  tentativeChoiceTitle={activeChoiceSet?.label}
+                  onPickTentativeOption={selectTentativeCalendarOption}
+                  newlyAddedCourseId={onboardingCourseGlowId}
+                  onOpenWeeklyCatchUp={weeklyCatchUp.onOpenWeeklyCatchUpFromCalendar}
+                  onAppleCalendarSync={handleOpenCalendarSync}
+                  onOpenTabGuide={() => openTabGuide("calendar")}
+                  catchUpOwnerToolbar={
+                    isAdmin ? (
+                      <Button
+                        variant="outline"
+                        className="h-8 shrink-0 text-xs"
+                        type="button"
+                        title="QA: clears prior demo catch-up tasks, then opens a fixed Sun–Thu week (virtual date in src/lib/demo-weekly-catchup.ts). Real Weekly catch-up still uses actual time. Demo tasks are removed when you leave Kanban or close this modal."
+                        onClick={weeklyCatchUp.onDemoWeeklyCatchUp}
+                      >
+                        Demo catch-up
+                      </Button>
+                    ) : null
+                  }
+                  />
+                </Suspense>
+              </div>
+              {catalogBookingFlowOpen &&
+              (catalogBookingQueue.length > 0 || catalogBookingSessionBooked.length > 0) ? (
+                <CatalogBookingRail
+                  pendingCourses={catalogBookingQueue}
+                  bookedCourses={catalogBookingSessionBooked}
+                  busyExternalId={catalogBookingBusyId}
+                  onBook={(course) => {
+                    void bookQueuedCatalogCourse(course);
+                  }}
+                  onDone={dismissCatalogBookingFlow}
+                  isOwned={isCatalogCourseOwned}
+                />
+              ) : null}
+            </div>
           )}
                     {state.ui.activeView === "courses" && (
             <Suspense fallback={<SchoolOsViewSuspenseFallback />}>
@@ -2801,23 +2825,24 @@ export function SchoolOS() {
         catalogDegreeOptions={catalogDegreeOptions}
         catalogDegree={catalogDegree}
         onSelectCatalogDegree={selectCatalogDegreeOption}
+        onLoadRoadmap={loadSelectedDegreeRoadmap}
+        catalogDegreeImporting={catalogDegreeImporting}
         catalogQuery={catalogQuery}
         onCatalogQueryChange={setCatalogQuery}
-        onRefreshCatalog={refreshCatalog}
-        catalogRefreshing={catalogRefreshing}
-        selectedCatalogDegreeLabel={selectedCatalogDegreeOption?.label}
-        catalogDegreeIdDisplay={catalogDegree}
-        catalogFreshness={catalogFreshness}
-        catalogError={catalogError}
         catalogLoading={catalogLoading}
         catalogViewMode={catalogViewMode}
         catalogResults={catalogResults}
         groupedRoadmapCourses={groupedRoadmapCourses}
-        catalogImportingId={catalogImportingId}
-        onImportCatalogCourse={importCatalogCourse}
+        savedDegreeRoadmaps={state.savedDegreeRoadmaps ?? []}
+        onSelectSavedRoadmap={selectSavedRoadmap}
+        onRemoveSavedRoadmap={removeSavedRoadmap}
+        catalogBookingQueueCount={catalogBookingQueue.length}
+        onToggleCatalogCourseForBooking={toggleCatalogCourseForBooking}
+        onBookCourses={beginBookCatalogCourses}
+        isCatalogCourseQueued={isCatalogCourseQueued}
+        isCatalogCourseOwned={isCatalogCourseOwned}
         onClose={() => {
           setIsCatalogPickerOpen(false);
-          setCatalogError(null);
         }}
       />
 

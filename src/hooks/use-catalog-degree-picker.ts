@@ -2,17 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_CATALOG_DEGREES, type CatalogDegreeOption } from "@/lib/catalog-types";
+import { pushSchoolOsToast } from "@/lib/global-app-toasts";
 
 const CATALOG_DEGREE_STORAGE_KEY = "school-os:catalog-degree:v1";
 
 export function useCatalogDegreePicker({
   isSettingsOpen,
-  isCatalogPickerOpen,
-  setCatalogError
+  isCatalogPickerOpen
 }: {
   isSettingsOpen: boolean;
   isCatalogPickerOpen: boolean;
-  setCatalogError: (value: string | null) => void;
 }) {
   const [catalogDegreeSearchQuery, setCatalogDegreeSearchQuery] = useState("");
   const [isCatalogDegreeOptionsOpen, setIsCatalogDegreeOptionsOpen] = useState(false);
@@ -75,16 +74,24 @@ export function useCatalogDegreePicker({
           }
         }
       } catch (error) {
-        setCatalogError(error instanceof Error ? error.message : "Degree search failed");
+        pushSchoolOsToast({
+          kind: "error",
+          message: error instanceof Error ? error.message : "Degree search failed"
+        });
       } finally {
         setCatalogDegreeSearchLoading(false);
       }
     },
-    [catalogDegree, setCatalogError]
+    [catalogDegree]
   );
 
   useEffect(() => {
     if (!isSettingsOpen && !isCatalogPickerOpen) return;
+    const trimmed = catalogDegreeSearchQuery.trim();
+    if (trimmed.length === 0) {
+      setCatalogDegreeOptions(DEFAULT_CATALOG_DEGREES);
+      return;
+    }
     void searchCatalogDegrees(catalogDegreeSearchQuery);
   }, [catalogDegreeSearchQuery, isCatalogPickerOpen, isSettingsOpen, searchCatalogDegrees]);
 

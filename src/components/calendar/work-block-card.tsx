@@ -42,7 +42,7 @@ export function WorkBlockCard({
   onDoubleClick,
   onResizeEdge
 }: WorkBlockCardProps) {
-  const isCompactBlock = height < 68;
+  const isCompactBlock = height < 72;
   const isWeek = variant === "week";
 
   const positionStyle = isWeek
@@ -66,8 +66,8 @@ export function WorkBlockCard({
         onDragStart({ id: block.id, durationMinutes: endMinutes - startMinutes, startMinutes, endMinutes, dateKey });
       }}
       onDoubleClick={() => onDoubleClick(block.id)}
-      className={`absolute flex min-h-0 min-w-0 flex-col gap-0.5 overflow-hidden ${roundedClass} border text-start text-xs ${shadowClass} ${zClass} ${
-        isCompactBlock ? "px-3 py-1.5" : isWeek ? "px-3 py-2" : "px-4 py-3"
+      className={`absolute flex min-w-0 flex-col gap-0.5 overflow-hidden ${roundedClass} border text-start text-xs ${shadowClass} ${zClass} ${
+        isCompactBlock ? (isWeek ? "px-2.5 py-2" : "px-3 py-1.5") : isWeek ? "px-3 py-2" : "px-4 py-3"
       }`}
       style={{
         ...softCourseStyle(color),
@@ -77,14 +77,20 @@ export function WorkBlockCard({
         ...positionStyle
       }}
     >
-      <p className={`min-w-0 max-w-full break-words font-semibold leading-tight text-slate-900 line-clamp-2 dark:text-white ${
-        isCompactBlock ? (isWeek ? "text-[11px]" : "text-xs") : isWeek ? "text-xs" : "text-sm"
-      }`}>
+      <p
+        dir="auto"
+        className={`min-w-0 max-w-full shrink-0 break-words font-semibold leading-snug text-slate-900 line-clamp-2 [overflow-wrap:anywhere] dark:text-white ${
+          isCompactBlock ? (isWeek ? "text-[11px]" : "text-xs") : isWeek ? "text-xs" : "text-sm"
+        }`}
+      >
         {linkedTaskTitle ?? block.titleSnapshot ?? "Work block"}
       </p>
-      <p dir="ltr" className={`min-w-0 max-w-full leading-tight text-slate-600 dark:text-white/90 ${
-        isCompactBlock ? (isWeek ? "text-[10px]" : "text-[11px]") : isWeek ? "text-[11px]" : "text-xs"
-      } ${isCompactBlock ? "" : "mt-0.5"}`}>
+      <p
+        dir="ltr"
+        className={`min-w-0 max-w-full shrink-0 leading-snug text-slate-600 [overflow-wrap:anywhere] dark:text-white/90 ${
+          isCompactBlock ? (isWeek ? "text-[10px]" : "text-[11px]") : isWeek ? "text-[11px]" : "text-xs"
+        } ${isCompactBlock ? "" : "mt-0.5"}`}
+      >
         {new Date(block.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
         {" - "}
         {new Date(block.endAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}

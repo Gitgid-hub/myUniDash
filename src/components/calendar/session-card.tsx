@@ -56,9 +56,10 @@ export function SessionCard({
   onDragEnd,
   onResizeEdge
 }: SessionCardProps) {
-  const isUltraCompact = height < 48;
-  const isCompactSession = height < 70;
   const isWeek = variant === "week";
+  const isUltraCompact = height < 48;
+  const isCompactSession = height < 72;
+  const isVeryShortWeekCard = isWeek && height >= 48 && height < 58;
 
   const isPrivateSession = session.course.id === PERSONAL_EVENTS_COURSE_ID;
   const meetingTitle = session.meeting.title?.trim();
@@ -109,9 +110,11 @@ export function SessionCard({
   const resizeHandleInset = isWeek ? "left-2 right-2" : "left-3 right-3";
 
   const layoutClass = isUltraCompact
-    ? "flex-row items-center gap-1 px-2 py-0"
+    ? "flex-row items-center gap-1 px-2 py-0.5"
     : isWeek
-      ? "flex-col gap-0.5 px-3 py-2"
+      ? isCompactSession
+        ? "flex-col gap-0.5 px-2.5 py-2"
+        : "flex-col gap-0.5 px-3 py-2"
       : isCompactSession
         ? "flex-col gap-0 px-3 py-1.5"
         : "flex-col gap-0.5 px-4 py-3";
@@ -147,41 +150,56 @@ export function SessionCard({
         onOpenQuickEditor(session.course, session.meeting, session.date, event.currentTarget.getBoundingClientRect());
       }}
       dir="auto"
-      className={`absolute flex min-h-0 min-w-0 overflow-hidden ${roundedClass} border text-start ${shadowClass} transition-opacity ${layoutClass}${isWeek ? " text-xs" : ""}`}
+      className={`absolute flex min-w-0 overflow-hidden ${roundedClass} border text-start ${shadowClass} transition-opacity ${layoutClass}${isWeek ? " text-xs" : ""}`}
       style={style}
     >
       {isUltraCompact ? (
-        <p dir="auto" className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-none text-slate-900 dark:text-white">
+        <p dir="auto" className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-snug text-slate-900 dark:text-white">
           {sessionPrimaryTitle}
         </p>
       ) : (
         <>
-          <p className={`min-w-0 max-w-full break-words font-semibold text-slate-900 dark:text-white ${
-            isCompactSession
-              ? isWeek ? "text-[11px] leading-[13px] line-clamp-1" : "text-[12px] leading-[14px] line-clamp-1"
-              : isWeek ? "leading-tight line-clamp-2" : "text-sm leading-tight line-clamp-2"
-          }`}>
+          <p
+            dir="auto"
+            className={`min-w-0 max-w-full shrink-0 break-words font-semibold text-slate-900 dark:text-white ${
+              isCompactSession
+                ? isWeek
+                  ? isVeryShortWeekCard
+                    ? "text-[11px] leading-normal line-clamp-1 [overflow-wrap:anywhere]"
+                    : "text-[11px] leading-snug line-clamp-2 [overflow-wrap:anywhere]"
+                  : "text-[12px] leading-snug line-clamp-2 [overflow-wrap:anywhere]"
+                : isWeek
+                  ? "leading-snug line-clamp-2 [overflow-wrap:anywhere]"
+                  : "text-sm leading-snug line-clamp-2 [overflow-wrap:anywhere]"
+            }`}
+          >
             {sessionPrimaryTitle}
           </p>
           {!isCompactSession && (
-            <p className={`min-w-0 max-w-full break-words leading-tight line-clamp-2 ${
-              isWeek ? "text-slate-700 dark:text-white/95" : "text-xs text-slate-700 dark:text-white/95"
-            }`}>
+            <p
+              dir="auto"
+              className={`min-w-0 max-w-full shrink-0 break-words leading-snug line-clamp-2 [overflow-wrap:anywhere] ${
+                isWeek ? "text-slate-700 dark:text-white/95" : "text-xs text-slate-700 dark:text-white/95"
+              }`}
+            >
               {sessionSecondaryTitle}
             </p>
           )}
           <p
             dir="ltr"
-            className={`min-w-0 max-w-full ${
-              isCompactSession ? "text-[10px] leading-[12px]" : isWeek ? "text-[11px] leading-tight" : "text-xs leading-tight"
+            className={`min-w-0 max-w-full shrink-0 [overflow-wrap:anywhere] ${
+              isCompactSession ? "text-[10px] leading-snug" : isWeek ? "text-[11px] leading-snug" : "text-xs leading-snug"
             } ${isWeek ? "mt-0.5 text-slate-600 dark:text-white/90" : "text-slate-700 dark:text-white/90"}`}
           >
             {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
           </p>
           {session.meeting.location && height >= 110 && (
-            <p className={`mt-0.5 whitespace-normal break-words text-[11px] leading-snug ${
-              isWeek ? "text-slate-600 dark:text-white/90" : "text-xs text-slate-700 line-clamp-2 dark:text-white/90"
-            }`}>
+            <p
+              dir="auto"
+              className={`mt-0.5 min-w-0 max-w-full shrink-0 whitespace-normal break-words text-[11px] leading-snug [overflow-wrap:anywhere] ${
+                isWeek ? "text-slate-600 dark:text-white/90" : "text-xs text-slate-700 line-clamp-2 dark:text-white/90"
+              }`}
+            >
               {session.meeting.location}
             </p>
           )}

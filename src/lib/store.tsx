@@ -12,6 +12,7 @@ import {
 } from "@/lib/ad-hoc-sem-b-exams-2026";
 import { createSeedState } from "@/lib/seed";
 import { LocalStorageStore } from "@/lib/storage";
+import type { SavedDegreeRoadmap } from "@/lib/catalog-types";
 import type {
   ClassNote,
   Course,
@@ -109,7 +110,9 @@ type Action =
   | { type: "publish-class-note"; payload: ID }
   | { type: "add-personal-event"; payload: Omit<PersonalEvent, "createdAt" | "updatedAt"> & { id?: ID } }
   | { type: "update-personal-event"; payload: Partial<PersonalEvent> & { id: ID } }
-  | { type: "delete-personal-event"; payload: ID };
+  | { type: "delete-personal-event"; payload: ID }
+  | { type: "upsert-saved-degree-roadmap"; payload: SavedDegreeRoadmap }
+  | { type: "remove-saved-degree-roadmap"; payload: string };
 
 /** Store reducer action union (for hooks that need a typed `dispatch` without importing the whole store). */
 export type SchoolDispatchAction = Action;
@@ -141,7 +144,8 @@ const fallback: SchoolState = {
     showSearch: false,
     weeklyCatchUpAutoPrompt: true,
     appleCalendarAutoSync: false
-  }
+  },
+  savedDegreeRoadmaps: []
 };
 
 const SchoolStoreContext = createContext<SchoolStoreValue | undefined>(undefined);
@@ -208,6 +212,7 @@ function normalizeState(state: SchoolState): SchoolState {
     reminderSettings,
     personalEvents,
     workBlocks: state.workBlocks ?? [],
+    savedDegreeRoadmaps: Array.isArray(state.savedDegreeRoadmaps) ? state.savedDegreeRoadmaps : [],
     classNotes: (state.classNotes ?? []).map(normalizeClassNote),
     ui: {
       ...state.ui,
@@ -550,12 +555,30 @@ function reducer(state: SchoolState, action: Action): SchoolState {
       };
     case "delete-personal-event":
       return { ...state, personalEvents: (state.personalEvents ?? []).filter((e) => e.id !== action.payload) };
+    case "upsert-saved-degree-roadmap": {
+      const prev = state.savedDegreeRoadmaps ?? [];
+      const snap = action.payload;
+      const idx = prev.findIndex((r) => r.degreeId === snap.degreeId);
+      const next =
+        idx === -1 ? [...prev, snap] : [...prev.slice(0, idx), snap, ...prev.slice(idx + 1)];
+      return { ...state, savedDegreeRoadmaps: next };
+    }
+    case "remove-saved-degree-roadmap": {
+      const prev = state.savedDegreeRoadmaps ?? [];
+      const next = prev.filter((r) => r.degreeId !== action.payload);
+      if (next.length === prev.length) return state;
+      return { ...state, savedDegreeRoadmaps: next };
+    }
     default:
       return state;
   }
 }
 
 export function SchoolStoreProvider({ children, store }: { children: React.ReactNode; store?: Store }) {
+  // When `store` is SupabaseStateStore (signed-in dashboard), user data lives in Supabase `user_states`
+  // and is loaded once per provider mount; see `cloud-store.ts` for write guards. Local-only builds use
+  // `LocalStorageStore` (`school-os:v3`). Do not dispatch a synthetic full "hydrate" with empty seed for
+  // signed-in users except via the provider's load-failure path (which disables cloud persist).
   const [state, dispatch] = useReducer(reducer, fallback);
   const [hydrated, setHydrated] = useState(false);
   const ready = hydrated;

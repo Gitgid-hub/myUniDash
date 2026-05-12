@@ -1,3 +1,5 @@
+import type { SavedDegreeRoadmap } from "@/lib/catalog-types";
+
 export type ID = string;
 
 export type ThemeMode = "dark" | "light" | "system";
@@ -209,6 +211,7 @@ export interface SchoolState {
   personalEvents: PersonalEvent[];
   reminderSettings: ReminderSettings;
   ui: UIState;
+  savedDegreeRoadmaps?: SavedDegreeRoadmap[];
 }
 
 export interface Store {

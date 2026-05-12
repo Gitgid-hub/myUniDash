@@ -1,8 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { pickDistinctCourseColor } from "@/lib/color-utils";
-import type { CatalogDegreeOption, CatalogSearchCourse, CatalogSearchMeeting } from "@/lib/catalog-types";
+import type {
+  CatalogDegreeOption,
+  CatalogSearchCourse,
+  CatalogSearchMeeting,
+  SavedDegreeRoadmap
+} from "@/lib/catalog-types";
 import {
   dedupeLabelSegments,
   getImportedChoiceSetPriority,
@@ -18,6 +23,68 @@ import type { PendingSessionChoiceFlow } from "@/hooks/use-pending-session-choic
 import type { CatalogRoadmapGroup } from "@/components/school-os/catalog-import-modal";
 
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
+const CATALOG_BOOKING_QUEUE_STORAGE_KEY = "school-os:catalog-booking-queue:v1";
+
+function catalogBookingQueueStorageKey(userId: string | undefined): string {
+  return `${CATALOG_BOOKING_QUEUE_STORAGE_KEY}:${userId ?? "__anon__"}`;
+}
+
+function parseStoredBookingQueue(raw: string | null): CatalogSearchCourse[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: CatalogSearchCourse[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const o = item as Record<string, unknown>;
+      const source = typeof o.source === "string" ? o.source : "";
+      const externalId = typeof o.externalId === "string" ? o.externalId : "";
+      const courseNumber = typeof o.courseNumber === "string" ? o.courseNumber : "";
+      if (!source || !externalId || !courseNumber) continue;
+      const meetingsRaw = Array.isArray(o.meetings) ? o.meetings : [];
+      const meetings: CatalogSearchCourse["meetings"] = [];
+      for (const m of meetingsRaw) {
+        if (!m || typeof m !== "object") continue;
+        const mo = m as Record<string, unknown>;
+        const weekday = mo.weekday;
+        const start_time = typeof mo.start_time === "string" ? mo.start_time : "";
+        const end_time = typeof mo.end_time === "string" ? mo.end_time : "";
+        if (typeof weekday !== "string" || !start_time || !end_time) continue;
+        meetings.push({
+          weekday: weekday as CatalogSearchCourse["meetings"][number]["weekday"],
+          start_time,
+          end_time,
+          meeting_type: typeof mo.meeting_type === "string" ? mo.meeting_type : null,
+          location: typeof mo.location === "string" ? mo.location : null,
+          semester: typeof mo.semester === "string" ? mo.semester : null
+        });
+      }
+      out.push({
+        source,
+        externalId,
+        courseNumber,
+        title: typeof o.title === "string" ? o.title : undefined,
+        nameHe: o.nameHe === null ? null : typeof o.nameHe === "string" ? o.nameHe : undefined,
+        nameEn: o.nameEn === null ? null : typeof o.nameEn === "string" ? o.nameEn : undefined,
+        faculty: o.faculty === null ? null : typeof o.faculty === "string" ? o.faculty : undefined,
+        department: o.department === null ? null : typeof o.department === "string" ? o.department : undefined,
+        credits: typeof o.credits === "number" && Number.isFinite(o.credits) ? o.credits : null,
+        lastSeenAt: typeof o.lastSeenAt === "string" ? o.lastSeenAt : undefined,
+        roadmapYearLabel: typeof o.roadmapYearLabel === "string" ? o.roadmapYearLabel : undefined,
+        roadmapSectionLabel: typeof o.roadmapSectionLabel === "string" ? o.roadmapSectionLabel : undefined,
+        meetings
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function catalogPickKey(course: Pick<CatalogSearchCourse, "source" | "externalId">): string {
+  return `${course.source}:${course.externalId}`;
+}
 
 export function useCatalogImport({
   userId,
@@ -39,11 +106,11 @@ export function useCatalogImport({
   setCatalogDegree,
   setCatalogDegreeSearchQuery,
   setIsCatalogDegreeOptionsOpen,
-  setCatalogError,
   isCatalogPickerOpen,
   onboardingActive,
   markDegreeRoadmapStale,
-  setOnboardingRoadmapLoaded
+  setOnboardingRoadmapLoaded,
+  savedDegreeRoadmaps
 }: {
   userId: string | undefined;
   courses: Course[];
@@ -64,21 +131,83 @@ export function useCatalogImport({
   setCatalogDegree: (id: string) => void;
   setCatalogDegreeSearchQuery: (q: string) => void;
   setIsCatalogDegreeOptionsOpen: (open: boolean) => void;
-  setCatalogError: (msg: string | null) => void;
   isCatalogPickerOpen: boolean;
   onboardingActive: boolean;
   markDegreeRoadmapStale: () => void;
   setOnboardingRoadmapLoaded: Dispatch<SetStateAction<boolean>>;
+  savedDegreeRoadmaps: SavedDegreeRoadmap[];
 }) {
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
-  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [catalogResults, setCatalogResults] = useState<CatalogSearchCourse[]>([]);
   const [catalogFreshness, setCatalogFreshness] = useState<{ lastCompletedAt: string | null; fetchedCount: number } | null>(null);
   const [catalogImportingId, setCatalogImportingId] = useState<string | null>(null);
   const [catalogDegreeImporting, setCatalogDegreeImporting] = useState(false);
   const [catalogViewMode, setCatalogViewMode] = useState<"search" | "roadmap">("search");
+  const [catalogBookingQueue, setCatalogBookingQueue] = useState<CatalogSearchCourse[]>([]);
+  const [catalogBookingFlowOpen, setCatalogBookingFlowOpen] = useState(false);
+  const [catalogBookingSessionBooked, setCatalogBookingSessionBooked] = useState<CatalogSearchCourse[]>([]);
+  const [catalogBookingBusyId, setCatalogBookingBusyId] = useState<string | null>(null);
   const degreeLoadRequestSeqRef = useRef(0);
+  const skipBookingQueuePersistRef = useRef(true);
+
+  useLayoutEffect(() => {
+    skipBookingQueuePersistRef.current = true;
+    if (typeof window === "undefined") return;
+    const key = catalogBookingQueueStorageKey(userId);
+    let next = parseStoredBookingQueue(window.localStorage.getItem(key));
+    if (next.length === 0 && userId) {
+      const anonKey = catalogBookingQueueStorageKey(undefined);
+      const fromAnon = parseStoredBookingQueue(window.localStorage.getItem(anonKey));
+      if (fromAnon.length > 0) {
+        next = fromAnon;
+        try {
+          window.localStorage.removeItem(anonKey);
+          window.localStorage.setItem(key, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+      }
+    }
+    setCatalogBookingQueue(next);
+  }, [userId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = catalogBookingQueueStorageKey(userId);
+    if (skipBookingQueuePersistRef.current) {
+      skipBookingQueuePersistRef.current = false;
+      return;
+    }
+    try {
+      if (catalogBookingQueue.length === 0) {
+        window.localStorage.removeItem(key);
+      } else {
+        window.localStorage.setItem(key, JSON.stringify(catalogBookingQueue));
+      }
+    } catch {
+      // ignore quota / private mode
+    }
+  }, [userId, catalogBookingQueue]);
+
+  const persistRoadmapSnapshot = useCallback(
+    (degreeId: string, courses: CatalogSearchCourse[], roadmapCodeFromApi: string | null) => {
+      const opt = catalogDegreeOptions.find((d) => d.id === degreeId);
+      const roadmapCode = roadmapCodeFromApi ?? opt?.roadmapCode ?? degreeId;
+      const label = opt?.label ?? degreeId;
+      dispatch({
+        type: "upsert-saved-degree-roadmap",
+        payload: {
+          degreeId,
+          roadmapCode,
+          label,
+          loadedAt: new Date().toISOString(),
+          courses
+        }
+      });
+    },
+    [catalogDegreeOptions, dispatch]
+  );
 
   const readDegreeRoadmapCache = useCallback(
     (degreeId: string): CatalogSearchCourse[] | null => {
@@ -126,9 +255,27 @@ export function useCatalogImport({
     [userId]
   );
 
+  const clearDegreeRoadmapCache = useCallback(
+    (degreeId: string) => {
+      if (typeof window === "undefined") return;
+      if (!userId) return;
+      try {
+        const raw = window.localStorage.getItem(DEGREE_ROADMAP_CACHE_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as Record<string, Record<string, unknown>>;
+        const userBucket = { ...(parsed[userId] ?? {}) };
+        delete userBucket[degreeId];
+        const next = { ...parsed, [userId]: userBucket };
+        window.localStorage.setItem(DEGREE_ROADMAP_CACHE_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Best effort cache only.
+      }
+    },
+    [userId]
+  );
+
   const runCatalogSearch = useCallback(async (query: string) => {
     setCatalogLoading(true);
-    setCatalogError(null);
     try {
       const url = `/api/catalog/search?q=${encodeURIComponent(query)}&limit=20`;
       const res = await fetch(url, { cache: "no-store" });
@@ -140,12 +287,13 @@ export function useCatalogImport({
       setCatalogResults(payload.courses ?? []);
       setCatalogFreshness(payload.freshness ?? null);
     } catch (error) {
-      setCatalogError(error instanceof Error ? error.message : "Failed to search catalog");
+      const msg = error instanceof Error ? error.message : "Failed to search catalog";
+      pushSchoolOsToast({ kind: "error", message: msg });
       setCatalogResults([]);
     } finally {
       setCatalogLoading(false);
     }
-  }, [setCatalogError]);
+  }, []);
 
   useEffect(() => {
     if (!isCatalogPickerOpen) return;
@@ -157,41 +305,62 @@ export function useCatalogImport({
     return () => window.clearTimeout(handle);
   }, [catalogQuery, isCatalogPickerOpen, runCatalogSearch]);
 
-  const refreshCatalog = useCallback(async () => {
-    setCatalogRefreshing(true);
-    setCatalogError(null);
-    try {
-      const headers = await getAuthHeader();
-      const res = await fetch("/api/catalog/refresh", {
-        method: "POST",
-        headers
-      });
-      const payload = await res.json();
-      if (!res.ok) {
-        throw new Error(payload.error ?? "Catalog refresh failed");
-      }
-      const trimmed = catalogQuery.trim();
-      if (!(catalogViewMode === "roadmap" && !trimmed)) {
-        await runCatalogSearch(trimmed);
-      }
-    } catch (error) {
-      setCatalogError(error instanceof Error ? error.message : "Catalog refresh failed");
-    } finally {
-      setCatalogRefreshing(false);
-    }
-  }, [catalogQuery, catalogViewMode, getAuthHeader, runCatalogSearch, setCatalogError]);
+  const isCatalogCourseQueued = useCallback(
+    (course: CatalogSearchCourse) =>
+      catalogBookingQueue.some((c) => catalogPickKey(c) === catalogPickKey(course)),
+    [catalogBookingQueue]
+  );
 
-  const importCatalogCourse = useCallback(
-    async (course: CatalogSearchCourse) => {
+  const toggleCatalogCourseForBooking = useCallback(
+    (course: CatalogSearchCourse) => {
       const alreadyLocal = courses.some(
         (item) => item.source === course.source && item.externalCourseId === course.externalId
       );
       if (alreadyLocal) {
-        setCatalogError("Course already exists in your courses.");
+        pushSchoolOsToast({ kind: "error", message: "Course already exists in your courses." });
         return;
       }
+      setCatalogBookingQueue((prev) => {
+        const key = catalogPickKey(course);
+        const idx = prev.findIndex((c) => catalogPickKey(c) === key);
+        if (idx >= 0) {
+          return prev.filter((_, i) => i !== idx);
+        }
+        return [...prev, course];
+      });
+    },
+    [courses]
+  );
+
+  const beginBookCatalogCourses = useCallback(() => {
+    if (catalogBookingQueue.length === 0) return;
+    setCatalogBookingSessionBooked([]);
+    setCatalogBookingFlowOpen(true);
+    dispatch({ type: "set-view", payload: "calendar" });
+    setCalendarMode("week");
+    setIsCatalogPickerOpen(false);
+    pushSchoolOsToast({
+      kind: "success",
+      message: "Week view opened — book each course from the list on the right."
+    });
+  }, [catalogBookingQueue.length, dispatch, setCalendarMode, setIsCatalogPickerOpen]);
+
+  const isCatalogCourseOwned = useCallback(
+    (course: CatalogSearchCourse) =>
+      courses.some((c) => c.source === course.source && c.externalCourseId === course.externalId),
+    [courses]
+  );
+
+  const importCatalogCourse = useCallback(
+    async (course: CatalogSearchCourse): Promise<boolean> => {
+      const alreadyLocal = courses.some(
+        (item) => item.source === course.source && item.externalCourseId === course.externalId
+      );
+      if (alreadyLocal) {
+        pushSchoolOsToast({ kind: "error", message: "Course already exists in your courses." });
+        return false;
+      }
       setCatalogImportingId(course.externalId);
-      setCatalogError(null);
       try {
         const headers = {
           "Content-Type": "application/json",
@@ -297,8 +466,13 @@ export function useCatalogImport({
         setIsSettingsOpen(false);
         setCatalogQuery("");
         setIsCourseActionsOpen(false);
+        return true;
       } catch (error) {
-        setCatalogError(error instanceof Error ? error.message : "Import failed");
+        pushSchoolOsToast({
+          kind: "error",
+          message: error instanceof Error ? error.message : "Import failed"
+        });
+        return false;
       } finally {
         setCatalogImportingId(null);
       }
@@ -310,7 +484,6 @@ export function useCatalogImport({
       getAuthHeader,
       pendingPanoptoAfterSessionChoiceRef,
       schedulePanoptoFolderPrompt,
-      setCatalogError,
       setCalendarMode,
       setFreshlyAddedCourseId,
       setIsCatalogPickerOpen,
@@ -321,12 +494,33 @@ export function useCatalogImport({
     ]
   );
 
+  const dismissCatalogBookingFlow = useCallback(() => {
+    setCatalogBookingFlowOpen(false);
+    setCatalogBookingSessionBooked([]);
+  }, []);
+
+  const bookQueuedCatalogCourse = useCallback(
+    async (course: CatalogSearchCourse) => {
+      if (catalogBookingBusyId) return;
+      setCatalogBookingBusyId(course.externalId);
+      try {
+        const ok = await importCatalogCourse(course);
+        if (!ok) return;
+        const key = catalogPickKey(course);
+        setCatalogBookingQueue((prev) => prev.filter((c) => catalogPickKey(c) !== key));
+        setCatalogBookingSessionBooked((prev) => [...prev, course]);
+      } finally {
+        setCatalogBookingBusyId(null);
+      }
+    },
+    [catalogBookingBusyId, importCatalogCourse]
+  );
+
   const loadDegreeRoadmapCourses = useCallback(
     async (degreeId: string, showToast = true, openCatalogPicker = true): Promise<boolean> => {
       const requestSeq = degreeLoadRequestSeqRef.current + 1;
       degreeLoadRequestSeqRef.current = requestSeq;
       setCatalogDegreeImporting(true);
-      setCatalogError(null);
       const cachedCourses = !showToast ? readDegreeRoadmapCache(degreeId) : null;
       if (cachedCourses && degreeLoadRequestSeqRef.current === requestSeq) {
         setCatalogViewMode("roadmap");
@@ -337,6 +531,7 @@ export function useCatalogImport({
         }
         setIsCourseActionsOpen(false);
         setCatalogDegreeImporting(false);
+        persistRoadmapSnapshot(degreeId, cachedCourses, null);
         return true;
       }
       setCatalogResults([]);
@@ -363,6 +558,7 @@ export function useCatalogImport({
         const roadmapCourses = (payload.courses ?? []) as Array<CatalogSearchCourse & { updatedAt?: string }>;
         const roadmapCode = typeof payload.roadmapCode === "string" ? payload.roadmapCode : null;
         writeDegreeRoadmapCache(degreeId, roadmapCourses);
+        persistRoadmapSnapshot(degreeId, roadmapCourses, roadmapCode);
         setCatalogViewMode("roadmap");
         setCatalogResults(roadmapCourses);
         setCatalogQuery("");
@@ -375,7 +571,7 @@ export function useCatalogImport({
             kind: "success",
             message:
               roadmapCourses.length > 0
-                ? `Loaded ${roadmapCourses.length} roadmap courses${roadmapCode ? ` (${roadmapCode})` : ""}. Use Add course to pick this semester.`
+                ? `Loaded ${roadmapCourses.length} roadmap courses${roadmapCode ? ` (${roadmapCode})` : ""}. Tap courses to queue them, then Book courses.`
                 : "No roadmap courses found for this degree."
           });
         }
@@ -384,7 +580,10 @@ export function useCatalogImport({
         if (degreeLoadRequestSeqRef.current !== requestSeq) {
           return false;
         }
-        setCatalogError(error instanceof Error ? error.message : "Degree import failed");
+        pushSchoolOsToast({
+          kind: "error",
+          message: error instanceof Error ? error.message : "Degree import failed"
+        });
         return false;
       } finally {
         if (degreeLoadRequestSeqRef.current === requestSeq) {
@@ -396,9 +595,9 @@ export function useCatalogImport({
       catalogDegreeOptions,
       getAuthHeader,
       readDegreeRoadmapCache,
-      setCatalogError,
       setIsCatalogPickerOpen,
       setIsCourseActionsOpen,
+      persistRoadmapSnapshot,
       writeDegreeRoadmapCache
     ]
   );
@@ -431,6 +630,8 @@ export function useCatalogImport({
       setCatalogDegreeSearchQuery(degree.label);
       setIsCatalogDegreeOptionsOpen(false);
       setCatalogQuery("");
+      setCatalogResults([]);
+      setCatalogViewMode("search");
       if (onboardingActive) {
         markDegreeRoadmapStale();
       }
@@ -440,15 +641,80 @@ export function useCatalogImport({
       onboardingActive,
       setCatalogDegree,
       setCatalogDegreeSearchQuery,
-      setIsCatalogDegreeOptionsOpen
+      setIsCatalogDegreeOptionsOpen,
+      setCatalogQuery,
+      setCatalogResults,
+      setCatalogViewMode
     ]
   );
 
-  useEffect(() => {
-    if (!isCatalogPickerOpen) return;
-    if (catalogQuery.trim().length > 0) return;
-    void loadDegreeRoadmapCourses(catalogDegree, false);
-  }, [catalogDegree, catalogQuery, isCatalogPickerOpen, loadDegreeRoadmapCourses]);
+  const loadSelectedDegreeRoadmap = useCallback(async () => {
+    const id = catalogDegree?.trim();
+    if (!id) {
+      pushSchoolOsToast({ kind: "error", message: "Search and select a degree first." });
+      return;
+    }
+    await loadDegreeRoadmapCourses(id, true, true);
+  }, [catalogDegree, loadDegreeRoadmapCourses]);
+
+  const selectSavedRoadmap = useCallback(
+    (degreeId: string) => {
+      const saved = savedDegreeRoadmaps.find((r) => r.degreeId === degreeId);
+      if (!saved) return;
+      const opt = catalogDegreeOptions.find((d) => d.id === degreeId);
+      setCatalogDegree(degreeId);
+      if (opt) {
+        setCatalogDegreeSearchQuery(opt.label);
+      }
+      setIsCatalogDegreeOptionsOpen(false);
+      setCatalogViewMode("roadmap");
+      setCatalogResults(saved.courses);
+      setCatalogQuery("");
+    },
+    [
+      catalogDegreeOptions,
+      savedDegreeRoadmaps,
+      setCatalogDegree,
+      setCatalogDegreeSearchQuery,
+      setIsCatalogDegreeOptionsOpen,
+      setCatalogViewMode,
+      setCatalogResults,
+      setCatalogQuery
+    ]
+  );
+
+  const removeSavedRoadmap = useCallback(
+    (degreeId: string): boolean => {
+      const label = savedDegreeRoadmaps.find((r) => r.degreeId === degreeId)?.label ?? "this roadmap";
+      if (
+        !window.confirm(
+          `Remove "${label}" from your saved roadmaps? You can load it again later from Settings.`
+        )
+      ) {
+        return false;
+      }
+      const remaining = savedDegreeRoadmaps.filter((r) => r.degreeId !== degreeId);
+      clearDegreeRoadmapCache(degreeId);
+      dispatch({ type: "remove-saved-degree-roadmap", payload: degreeId });
+      if (degreeId !== catalogDegree) {
+        return true;
+      }
+      if (remaining.length > 0) {
+        selectSavedRoadmap(remaining[0]!.degreeId);
+      } else {
+        setCatalogViewMode("roadmap");
+        setCatalogResults([]);
+      }
+      return true;
+    },
+    [
+      catalogDegree,
+      clearDegreeRoadmapCache,
+      dispatch,
+      savedDegreeRoadmaps,
+      selectSavedRoadmap
+    ]
+  );
 
   const groupedRoadmapCourses = useMemo((): CatalogRoadmapGroup[] => {
     if (catalogViewMode !== "roadmap") return [];
@@ -479,7 +745,6 @@ export function useCatalogImport({
     catalogQuery,
     setCatalogQuery,
     catalogLoading,
-    catalogRefreshing,
     catalogResults,
     catalogFreshness,
     catalogImportingId,
@@ -487,11 +752,23 @@ export function useCatalogImport({
     catalogViewMode,
     setCatalogViewMode,
     runCatalogSearch,
-    refreshCatalog,
     importCatalogCourse,
+    catalogBookingQueue,
+    toggleCatalogCourseForBooking,
+    isCatalogCourseQueued,
+    beginBookCatalogCourses,
+    isCatalogCourseOwned,
+    catalogBookingFlowOpen,
+    catalogBookingSessionBooked,
+    catalogBookingBusyId,
+    bookQueuedCatalogCourse,
+    dismissCatalogBookingFlow,
     loadDegreeRoadmapCourses,
     importFullDegreePlan,
     selectCatalogDegreeOption,
+    loadSelectedDegreeRoadmap,
+    selectSavedRoadmap,
+    removeSavedRoadmap,
     groupedRoadmapCourses
   };
 }

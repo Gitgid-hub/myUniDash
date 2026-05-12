@@ -18,6 +18,7 @@ export function createSeedState(): SchoolState {
       showSearch: false,
       weeklyCatchUpAutoPrompt: true,
       appleCalendarAutoSync: false
-    }
+    },
+    savedDegreeRoadmaps: []
   };
 }

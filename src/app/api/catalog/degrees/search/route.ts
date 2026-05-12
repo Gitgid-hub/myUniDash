@@ -30,7 +30,8 @@ function dedupeLabeledParts(value: string): string {
 
 function buildSearchTerms(rawQuery: string): string[] {
   const q = normalizeSpaces(rawQuery);
-  if (!q) return [" "];
+  // HUJI rejects empty/whitespace name (e.g. name=+); do not call the API with a bogus term.
+  if (!q) return [];
   const terms = new Set<string>([q]);
 
   const digitsOnly = q.replace(/[^\d]/g, "");
