@@ -24,7 +24,6 @@ export interface SessionCardProps {
   height: number;
   startMinutes: number;
   endMinutes: number;
-  sessionDateKey: string;
   minAllowedMinutes: number;
   selectedSession: SelectedSession | null;
   newlyAddedCourseId: string | null;
@@ -45,7 +44,6 @@ export function SessionCard({
   height,
   startMinutes,
   endMinutes,
-  sessionDateKey,
   minAllowedMinutes,
   selectedSession,
   newlyAddedCourseId,

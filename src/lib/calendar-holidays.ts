@@ -58,3 +58,13 @@ export function hebcalItemsToChips(raw: HebcalHolidayApiItem[]): CalendarHoliday
   }
   return out;
 }
+
+export function hebcalPillClasses(subcat?: string): string {
+  if (subcat === "modern") {
+    return "border border-violet-400/35 bg-violet-600 text-white shadow-sm dark:bg-violet-500";
+  }
+  if (subcat === "minor") {
+    return "border border-amber-500/30 bg-amber-900/85 text-amber-50 shadow-sm dark:bg-amber-900/80";
+  }
+  return "border border-indigo-400/35 bg-indigo-600 text-white shadow-sm dark:bg-indigo-500";
+}

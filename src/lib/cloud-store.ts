@@ -42,7 +42,9 @@ export class SupabaseStateStore implements Store {
   async getState(): Promise<SchoolState> {
     const supabase = getSupabaseClient();
     if (!supabase) {
-      return createSeedState();
+      // Same as load errors: must reject so SchoolStoreProvider does not enable autosave and push an
+      // empty seed over a real cloud row when the client is briefly unavailable.
+      throw new Error("Supabase client unavailable");
     }
 
     const { data, error } = await supabase
@@ -54,16 +56,16 @@ export class SupabaseStateStore implements Store {
     if (error) {
       console.error("Failed loading cloud state:", error.message);
       maybeShowCloudError("Cloud sync failed. Showing local data for now.");
-      return createSeedState();
+      // Must reject: SchoolStoreProvider treats a resolved getState() as a successful load and enables
+      // autosave — returning an empty seed here would overwrite the user's real row in user_states.
+      throw new Error(`Failed loading cloud state: ${error.message}`);
     }
 
     if (data?.state) {
       const loaded = data.state as SchoolState;
       if (shouldResetLegacySeedWorkspace(loaded)) {
-        const initial = createSeedState();
-        // Non-blocking migration: users who never edited old demo data should see onboarding as first-time users.
-        void this.setState(initial).catch(() => {});
-        return initial;
+        // In-memory fresh start only. Never persist here — a false positive would wipe cloud data.
+        return createSeedState();
       }
       return loaded;
     }

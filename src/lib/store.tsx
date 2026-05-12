@@ -41,7 +41,7 @@ interface TaskInput {
   recurring?: Task["recurring"];
 }
 
-interface CourseInput {
+export interface CourseInput {
   id?: ID;
   name: string;
   code: string;
@@ -110,6 +110,9 @@ type Action =
   | { type: "add-personal-event"; payload: Omit<PersonalEvent, "createdAt" | "updatedAt"> & { id?: ID } }
   | { type: "update-personal-event"; payload: Partial<PersonalEvent> & { id: ID } }
   | { type: "delete-personal-event"; payload: ID };
+
+/** Store reducer action union (for hooks that need a typed `dispatch` without importing the whole store). */
+export type SchoolDispatchAction = Action;
 
 interface SchoolStoreValue {
   state: SchoolState;
