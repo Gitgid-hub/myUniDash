@@ -1,5 +1,8 @@
 import { startOfDay } from "@/lib/date";
-import type { Course, CourseMeeting, WeekDay } from "@/lib/types";
+import type { Course, CourseMeeting, PersonalEvent, WeekDay } from "@/lib/types";
+
+/** Sentinel course ID used for personal calendar events that belong to no course. */
+export const PERSONAL_EVENTS_COURSE_ID = "course-personal-events";
 
 /** Week column order: Sunday = index 0 from `Date.getDay()`. */
 export const CALENDAR_WEEK_DAYS: WeekDay[] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -166,6 +169,65 @@ export function detectMeetingConflicts(courses: Course[], courseId: string, draf
     });
   });
   return [...conflicts].slice(0, 5);
+}
+
+function personalEventToSyntheticPair(event: PersonalEvent): { course: Course; meeting: CourseMeeting } {
+  return {
+    course: {
+      id: PERSONAL_EVENTS_COURSE_ID,
+      name: event.title,
+      code: "PRIVATE",
+      color: event.color,
+      archived: false,
+      notes: "",
+      meetings: [],
+      grading: [],
+      progressMode: "manual",
+      manualProgress: 0,
+      createdAt: event.createdAt,
+      updatedAt: event.updatedAt
+    },
+    meeting: {
+      id: event.id,
+      day: event.day,
+      start: event.start,
+      end: event.end,
+      title: event.title,
+      location: event.location,
+      notes: event.notes,
+      isAllDay: event.isAllDay,
+      anchorDate: event.anchorDate,
+      recurrence: event.recurrence ?? { cadence: "weekly", interval: 1, daysOfWeek: [event.day] },
+      seriesId: event.id,
+      type: undefined
+    }
+  };
+}
+
+export function expandPersonalEventOccurrences(events: PersonalEvent[], rangeStart: Date, rangeEnd: Date): SessionOccurrence[] {
+  const dates: Date[] = [];
+  for (let cursor = startOfDay(rangeStart); cursor.getTime() <= startOfDay(rangeEnd).getTime(); cursor = addDays(cursor, 1)) {
+    dates.push(new Date(cursor));
+  }
+  return events.flatMap((event) => {
+    const { course, meeting } = personalEventToSyntheticPair(event);
+    return dates
+      .filter((date) => meetingOccursOnDate(meeting, date))
+      .map((date) => ({
+        course,
+        meeting,
+        date,
+        instanceKey: `personal-${event.id}-${formatDateKey(date)}`
+      }));
+  });
+}
+
+export function buildSyntheticCourseForPersonalEvent(event: PersonalEvent): Course {
+  return personalEventToSyntheticPair(event).course;
+}
+
+export function buildSyntheticMeetingForPersonalEvent(event: PersonalEvent): CourseMeeting {
+  return personalEventToSyntheticPair(event).meeting;
 }
 
 export function formatSessionType(type?: CourseMeeting["type"]): string {

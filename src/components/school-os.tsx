@@ -75,6 +75,7 @@ import type {
   Course,
   CourseMeeting,
   MainView,
+  PersonalEvent,
   Task,
   TaskAttachment,
   TaskPriority,
@@ -103,15 +104,19 @@ import {
 } from "@/lib/academic-week-catchup";
 import {
   addDays,
+  buildSyntheticCourseForPersonalEvent,
+  buildSyntheticMeetingForPersonalEvent,
   CALENDAR_WEEK_DAYS as weekDays,
   detectMeetingConflicts,
   expandMeetingOccurrences,
+  expandPersonalEventOccurrences,
   formatDateKey,
   formatSessionType,
   getWeekDayFromDate,
   groupOccurrencesByDate,
   layoutOverlappingEvents,
   parseTimeValue,
+  PERSONAL_EVENTS_COURSE_ID,
   startOfWeekGrid,
   type SessionOccurrence
 } from "@/lib/calendar-occurrences";
@@ -149,7 +154,8 @@ const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
 const USER_REQUESTS_SEEN_WATERMARK_KEY = "school-os:user-requests-seen-watermark:v1";
 const KANBAN_BOARD_LAYOUT_STORAGE_KEY = "school-os:kanban-board-layout:v1";
 const DEGREE_ROADMAP_CACHE_STORAGE_KEY = "school-os:degree-roadmap-cache:v1";
-const UNRELATED_SESSIONS_COURSE_ID = "course-unrelated-sessions";
+/** Legacy sentinel kept only for any stale references during migration; use PERSONAL_EVENTS_COURSE_ID from calendar-occurrences. */
+const _LEGACY_PERSONAL_EVENTS_COURSE_ID = "course-unrelated-sessions"; void _LEGACY_PERSONAL_EVENTS_COURSE_ID;
 type CatalogDegreeOption = {
   id: string;
   roadmapCode: string;
@@ -1989,7 +1995,7 @@ export function SchoolOS() {
     return { completed, workload };
   }, [state.tasks, activeCourses]);
   const catchUpEligibleCourses = useMemo(
-    () => activeCourses.filter((course) => course.id !== UNRELATED_SESSIONS_COURSE_ID),
+    () => activeCourses.filter((course) => course.id !== PERSONAL_EVENTS_COURSE_ID),
     [activeCourses]
   );
 
@@ -2307,7 +2313,7 @@ export function SchoolOS() {
 
   const handleDownloadSessionsIcs = useCallback(() => {
     try {
-      const { text, eventCount } = buildSchoolSessionsIcs(state.courses);
+      const { text, eventCount } = buildSchoolSessionsIcs(state.courses, new Date(), state.personalEvents ?? []);
       if (eventCount === 0) {
         pushSchoolOsToast({
           kind: "error",
@@ -2494,11 +2500,19 @@ export function SchoolOS() {
     setPostSessionPrompt(null);
   }, []);
 
-  const selectedSessionCourse = selectedCalendarSession ? activeCourses.find((c) => c.id === selectedCalendarSession.courseId) : undefined;
-  const selectedSessionMeeting =
-    selectedSessionCourse && selectedCalendarSession
-      ? selectedSessionCourse.meetings.find((m) => m.id === selectedCalendarSession.meetingId)
-      : undefined;
+  const selectedPersonalEvent = selectedCalendarSession?.courseId === PERSONAL_EVENTS_COURSE_ID
+    ? (state.personalEvents ?? []).find((e) => e.id === selectedCalendarSession.meetingId)
+    : undefined;
+  const selectedSessionCourse = selectedCalendarSession
+    ? selectedCalendarSession.courseId === PERSONAL_EVENTS_COURSE_ID
+      ? selectedPersonalEvent ? buildSyntheticCourseForPersonalEvent(selectedPersonalEvent) : undefined
+      : activeCourses.find((c) => c.id === selectedCalendarSession.courseId)
+    : undefined;
+  const selectedSessionMeeting = selectedCalendarSession
+    ? selectedCalendarSession.courseId === PERSONAL_EVENTS_COURSE_ID
+      ? selectedPersonalEvent ? buildSyntheticMeetingForPersonalEvent(selectedPersonalEvent) : undefined
+      : selectedSessionCourse?.meetings.find((m) => m.id === selectedCalendarSession.meetingId)
+    : undefined;
 
   useEffect(() => {
     if (selectedCalendarSession && (!selectedSessionCourse || !selectedSessionMeeting)) {
@@ -2508,6 +2522,18 @@ export function SchoolOS() {
 
   const deleteSelectedSession = useCallback((scope: "single" | "series") => {
     if (!selectedCalendarSession || !selectedSessionCourse || !selectedSessionMeeting) return;
+    if (selectedCalendarSession.courseId === PERSONAL_EVENTS_COURSE_ID && selectedPersonalEvent) {
+      if (scope === "series" || (selectedPersonalEvent.recurrence?.cadence ?? "weekly") === "none") {
+        dispatch({ type: "delete-personal-event", payload: selectedPersonalEvent.id });
+      } else {
+        const dateKey = formatDateKey(selectedCalendarSession.anchorDate);
+        const recurrence = selectedPersonalEvent.recurrence ?? { cadence: "weekly" as const, interval: 1, daysOfWeek: [selectedPersonalEvent.day] };
+        const nextExceptions = Array.from(new Set([...(recurrence.exceptions ?? []), dateKey]));
+        dispatch({ type: "update-personal-event", payload: { id: selectedPersonalEvent.id, recurrence: { ...recurrence, exceptions: nextExceptions } } });
+      }
+      setSelectedCalendarSession(null);
+      return;
+    }
     if (scope === "series" || (selectedSessionMeeting.recurrence?.cadence ?? "weekly") === "none") {
       updateCourseWithUndo({
         id: selectedSessionCourse.id,
@@ -2528,10 +2554,20 @@ export function SchoolOS() {
       )
     });
     setSelectedCalendarSession(null);
-  }, [selectedCalendarSession, selectedSessionCourse, selectedSessionMeeting, updateCourseWithUndo]);
+  }, [dispatch, selectedCalendarSession, selectedPersonalEvent, selectedSessionCourse, selectedSessionMeeting, updateCourseWithUndo]);
 
   const deleteSelectedSessionFuture = useCallback(() => {
     if (!selectedCalendarSession || !selectedSessionCourse || !selectedSessionMeeting) return;
+    if (selectedCalendarSession.courseId === PERSONAL_EVENTS_COURSE_ID && selectedPersonalEvent) {
+      const recurrence = selectedPersonalEvent.recurrence;
+      if (!recurrence || recurrence.cadence === "none") { deleteSelectedSession("single"); return; }
+      const untilDate = new Date(selectedCalendarSession.anchorDate);
+      untilDate.setDate(untilDate.getDate() - 1);
+      const untilIso = new Date(`${formatDateKey(untilDate)}T23:59:59`).toISOString();
+      dispatch({ type: "update-personal-event", payload: { id: selectedPersonalEvent.id, recurrence: { ...recurrence, until: untilIso } } });
+      setSelectedCalendarSession(null);
+      return;
+    }
     const recurrence = selectedSessionMeeting.recurrence;
     if (!recurrence || recurrence.cadence === "none") {
       deleteSelectedSession("single");
@@ -2549,7 +2585,7 @@ export function SchoolOS() {
       )
     });
     setSelectedCalendarSession(null);
-  }, [deleteSelectedSession, selectedCalendarSession, selectedSessionCourse, selectedSessionMeeting, updateCourseWithUndo]);
+  }, [deleteSelectedSession, dispatch, selectedCalendarSession, selectedPersonalEvent, selectedSessionCourse, selectedSessionMeeting, updateCourseWithUndo]);
 
   const [copiedSessionMeeting, setCopiedSessionMeeting] = useState<CourseMeeting | null>(null);
 
@@ -2605,10 +2641,29 @@ export function SchoolOS() {
               ? { ...copiedSessionMeeting.recurrence, daysOfWeek: [day] }
               : copiedSessionMeeting.recurrence
         };
-        updateCourseWithUndo({
-          id: selectedSessionCourse.id,
-          meetings: [...selectedSessionCourse.meetings, pasted]
-        });
+        if (selectedPersonalEvent) {
+          dispatch({
+            type: "add-personal-event",
+            payload: {
+              id: pasted.id ?? createId("pevt"),
+              title: pasted.title?.trim() || selectedPersonalEvent.title,
+              color: selectedPersonalEvent.color,
+              day: pasted.day,
+              start: pasted.start,
+              end: pasted.end,
+              location: pasted.location,
+              notes: pasted.notes,
+              isAllDay: pasted.isAllDay,
+              anchorDate: pasted.anchorDate,
+              recurrence: pasted.recurrence
+            }
+          });
+        } else {
+          updateCourseWithUndo({
+            id: selectedSessionCourse.id,
+            meetings: [...selectedSessionCourse.meetings, pasted]
+          });
+        }
         pushSchoolOsToast({ kind: "success", message: "Session duplicated." });
       }
     };
@@ -2618,9 +2673,11 @@ export function SchoolOS() {
     copiedSessionMeeting,
     deleteSelectedSession,
     deleteSelectedSessionFuture,
+    dispatch,
     openClassNoteDraftForSession,
     selectedCalendarDate,
     selectedCalendarSession,
+    selectedPersonalEvent,
     selectedSessionCourse,
     selectedSessionMeeting,
     state.ui.activeView,
@@ -2631,8 +2688,11 @@ export function SchoolOS() {
     const day = new Date();
     const start = startOfDay(day);
     const end = startOfDay(day);
-    return expandMeetingOccurrences(activeCourses, start, end);
-  }, [activeCourses]);
+    return [
+      ...expandMeetingOccurrences(activeCourses, start, end),
+      ...expandPersonalEventOccurrences(state.personalEvents ?? [], start, end)
+    ];
+  }, [activeCourses, state.personalEvents]);
 
   useEffect(() => {
     if (!ready) return;
@@ -3307,6 +3367,7 @@ export function SchoolOS() {
               tasks={state.tasks}
               workBlocks={state.workBlocks}
               courses={activeCourses}
+              personalEvents={state.personalEvents ?? []}
               mode={calendarMode}
               onMode={setCalendarMode}
               selectedDate={selectedCalendarDate}
@@ -3326,6 +3387,9 @@ export function SchoolOS() {
               }
               onUpdateCourse={updateCourseWithUndo}
               onAddCourse={addCourse}
+              onAddPersonalEvent={(event) => dispatch({ type: "add-personal-event", payload: event })}
+              onUpdatePersonalEvent={(event) => dispatch({ type: "update-personal-event", payload: event })}
+              onDeletePersonalEvent={(id) => dispatch({ type: "delete-personal-event", payload: id })}
               onAddWorkBlock={addWorkBlockWithUndo}
               onUpdateWorkBlock={updateWorkBlockWithUndo}
               onDeleteWorkBlock={deleteWorkBlockWithUndo}
@@ -4470,7 +4534,15 @@ export function SchoolOS() {
 
       {isSessionEditorOpen && (
         <SessionEditorModal
-          courses={activeCourses}
+          courses={[
+            ...activeCourses,
+            {
+              id: PERSONAL_EVENTS_COURSE_ID, name: "Personal events", code: "PRIVATE", color: "#64748b",
+              archived: false, notes: "", grading: [], progressMode: "manual", manualProgress: 0,
+              createdAt: "", updatedAt: "",
+              meetings: (state.personalEvents ?? []).map((e) => buildSyntheticMeetingForPersonalEvent(e))
+            }
+          ]}
           selectedCourseId={state.ui.selectedCourseId}
           selectedDate={selectedCalendarDate}
           sessionDraft={sessionDraft}
@@ -4479,6 +4551,53 @@ export function SchoolOS() {
             setSessionDraft(undefined);
           }}
           onSave={(courseId, meetings, replaceMode) => {
+            if (courseId === PERSONAL_EVENTS_COURSE_ID) {
+              const editingMeetingId = sessionDraft?.meetingId;
+              const editingEventId = editingMeetingId;
+              if (editingEventId) {
+                const newMeeting = meetings.find((m) => m.id === editingEventId) ?? meetings[0];
+                if (newMeeting) {
+                  dispatch({
+                    type: "update-personal-event",
+                    payload: {
+                      id: editingEventId,
+                      title: newMeeting.title?.trim() || "Personal event",
+                      day: newMeeting.day,
+                      start: newMeeting.start,
+                      end: newMeeting.end,
+                      location: newMeeting.location,
+                      notes: newMeeting.notes,
+                      isAllDay: newMeeting.isAllDay,
+                      anchorDate: newMeeting.anchorDate,
+                      recurrence: newMeeting.recurrence
+                    }
+                  });
+                }
+              } else {
+                for (const newMeeting of meetings) {
+                  dispatch({
+                    type: "add-personal-event",
+                    payload: {
+                      id: newMeeting.id ?? createId("pevt"),
+                      title: newMeeting.title?.trim() || "Personal event",
+                      color: "#64748b",
+                      day: newMeeting.day,
+                      start: newMeeting.start,
+                      end: newMeeting.end,
+                      location: newMeeting.location,
+                      notes: newMeeting.notes,
+                      isAllDay: newMeeting.isAllDay,
+                      anchorDate: newMeeting.anchorDate,
+                      recurrence: newMeeting.recurrence
+                    }
+                  });
+                }
+              }
+              setIsSessionEditorOpen(false);
+              setSessionDraft(undefined);
+              return;
+            }
+
             const targetCourse = activeCourses.find((item) => item.id === courseId);
             if (!targetCourse) return;
 
@@ -5348,6 +5467,7 @@ function CalendarView({
   tasks,
   workBlocks,
   courses,
+  personalEvents,
   mode,
   onMode,
   selectedDate,
@@ -5359,6 +5479,9 @@ function CalendarView({
   selectedSession,
   onUpdateCourse,
   onAddCourse,
+  onAddPersonalEvent,
+  onUpdatePersonalEvent,
+  onDeletePersonalEvent,
   onAddWorkBlock,
   onUpdateWorkBlock,
   onDeleteWorkBlock,
@@ -5375,6 +5498,7 @@ function CalendarView({
   tasks: Task[];
   workBlocks: WorkBlock[];
   courses: Course[];
+  personalEvents: PersonalEvent[];
   mode: "month" | "week" | "day";
   onMode: (mode: "month" | "week" | "day") => void;
   selectedDate: Date;
@@ -5399,6 +5523,9 @@ function CalendarView({
     progressMode?: "manual" | "computed";
     manualProgress?: number;
   }) => void;
+  onAddPersonalEvent: (event: Omit<PersonalEvent, "createdAt" | "updatedAt">) => void;
+  onUpdatePersonalEvent: (event: Partial<PersonalEvent> & { id: string }) => void;
+  onDeletePersonalEvent: (id: string) => void;
   onAddWorkBlock: (block: Omit<WorkBlock, "id" | "createdAt">) => void;
   onUpdateWorkBlock: (block: Partial<WorkBlock> & { id: string }) => void;
   onDeleteWorkBlock: (id: string) => void;
@@ -5426,10 +5553,6 @@ function CalendarView({
   catchUpOwnerToolbar?: ReactNode;
 }) {
   const visibleCourses = useMemo(() => courses.filter((course) => visibleCourseIds.includes(course.id)), [courses, visibleCourseIds]);
-  const unrelatedSessionsCourse = useMemo(
-    () => courses.find((course) => course.id === UNRELATED_SESSIONS_COURSE_ID),
-    [courses]
-  );
   const courseMap = useMemo(() => Object.fromEntries(courses.map((course) => [course.id, course])), [courses]);
   const bookedBlockByTaskId = useMemo(() => buildBookedBlockByTaskId(workBlocks), [workBlocks]);
   const tasksByCourseId = useMemo(() => {
@@ -5457,8 +5580,11 @@ function CalendarView({
   const rangeStart = mode === "month" ? monthDays[0] : mode === "week" ? weekDates[0] : selectedDate;
   const rangeEnd = mode === "month" ? monthDays[41] : mode === "week" ? weekDates[6] : selectedDate;
   const sessionOccurrences = useMemo(
-    () => expandMeetingOccurrences(visibleCourses, rangeStart, rangeEnd),
-    [visibleCourses, rangeStart, rangeEnd]
+    () => [
+      ...expandMeetingOccurrences(visibleCourses, rangeStart, rangeEnd),
+      ...expandPersonalEventOccurrences(personalEvents, rangeStart, rangeEnd)
+    ],
+    [visibleCourses, personalEvents, rangeStart, rangeEnd]
   );
   const tentativeOccurrences = useMemo(() => {
     if (!tentativeOptions?.length) return [];
@@ -5886,7 +6012,7 @@ function CalendarView({
     }
     const start = formatHourMinutes(creatingSession.startMinutes);
     const end = formatHourMinutes(creatingSession.endMinutes);
-    const defaultCourseId = unrelatedSessionsCourse?.id ?? UNRELATED_SESSIONS_COURSE_ID;
+    const defaultCourseId = PERSONAL_EVENTS_COURSE_ID;
     setQuickCreateDraft({
       mode: "create",
       date: creatingSession.date,
@@ -6067,19 +6193,42 @@ function CalendarView({
       until: "",
       count: ""
     });
-    const course = courses.find((c) => c.id === draft.courseId);
-    if (!course && draft.mode !== "edit" && draft.courseId === UNRELATED_SESSIONS_COURSE_ID) {
-      onAddCourse({
-        id: UNRELATED_SESSIONS_COURSE_ID,
-        name: "Unrelated sessions",
-        code: "PRIVATE",
-        color: "#64748b",
-        meetings: [meeting]
-      });
+    if (draft.courseId === PERSONAL_EVENTS_COURSE_ID) {
+      const anchorIso = new Date(`${formatDateKey(draft.date)}T12:00:00`).toISOString();
+      const recurrence: PersonalEvent["recurrence"] = draft.cadence === "weekly"
+        ? { cadence: "weekly", interval: 1, daysOfWeek: draft.repeatDays }
+        : { cadence: "none", interval: 1 };
+      if (draft.mode === "edit" && draft.meetingId) {
+        onUpdatePersonalEvent({
+          id: draft.meetingId,
+          title: draft.title.trim() || "Personal event",
+          day: getWeekDayFromDate(draft.date),
+          start: draft.isAllDay ? "00:00" : draft.start,
+          end: draft.isAllDay ? "23:59" : draft.end,
+          anchorDate: anchorIso,
+          location: draft.location.trim() || undefined,
+          isAllDay: draft.isAllDay,
+          recurrence
+        });
+      } else {
+        onAddPersonalEvent({
+          id: meeting.id ?? createId("pevt"),
+          title: draft.title.trim() || "Personal event",
+          color: "#64748b",
+          day: getWeekDayFromDate(draft.date),
+          start: draft.isAllDay ? "00:00" : draft.start,
+          end: draft.isAllDay ? "23:59" : draft.end,
+          anchorDate: anchorIso,
+          location: draft.location.trim() || undefined,
+          isAllDay: draft.isAllDay,
+          recurrence
+        });
+      }
       setQuickCreateDraft(null);
       setQuickCreateAnchor(null);
       return;
     }
+    const course = courses.find((c) => c.id === draft.courseId);
     if (!course) return;
     if (draft.mode === "edit" && draft.meetingId) {
       onUpdateCourse({
@@ -6114,7 +6263,7 @@ function CalendarView({
     }
     setQuickCreateDraft(null);
     setQuickCreateAnchor(null);
-  }, [quickCreateDraft, courses, onAddCourse, onUpdateCourse]);
+  }, [quickCreateDraft, courses, onAddCourse, onAddPersonalEvent, onUpdateCourse, onUpdatePersonalEvent]);
 
   const onQuickCreateFieldEnter = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -6767,7 +6916,7 @@ function CalendarView({
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * WEEK_TIMELINE_ROW_PX);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * WEEK_TIMELINE_ROW_PX);
                     const isCompactSession = height < 70;
-                    const isPrivateSession = session.course.id === UNRELATED_SESSIONS_COURSE_ID;
+                    const isPrivateSession = session.course.id === PERSONAL_EVENTS_COURSE_ID;
                     const privateTitle = session.meeting.title?.trim() || "New session";
                     const meetingTitle = session.meeting.title?.trim();
                     const sessionPrimaryTitle = isPrivateSession
@@ -6866,7 +7015,7 @@ function CalendarView({
                         >
                           {formatHourMinutes(startMinutes)} - {formatHourMinutes(endMinutes)}
                         </p>
-                        {session.meeting.location && (
+                        {session.meeting.location && height >= 110 && (
                           <p className="mt-0.5 whitespace-normal break-words text-[11px] leading-snug text-slate-600 dark:text-white/90">
                             {session.meeting.location}
                           </p>
@@ -7653,7 +7802,7 @@ function CalendarView({
                     const top = Math.max(0, ((startMinutes - timelineHours[0] * 60) / 60) * dayHourHeight);
                     const height = Math.max(28, ((endMinutes - startMinutes) / 60) * dayHourHeight);
                     const isCompactSession = height < 70;
-                    const isPrivateSession = session.course.id === UNRELATED_SESSIONS_COURSE_ID;
+                    const isPrivateSession = session.course.id === PERSONAL_EVENTS_COURSE_ID;
                     const privateTitle = session.meeting.title?.trim() || "New session";
                     const meetingTitle = session.meeting.title?.trim();
                     const sessionPrimaryTitle = isPrivateSession
@@ -8141,9 +8290,9 @@ function CalendarView({
                   onChange={(event) => setQuickCreateDraft((curr) => curr ? { ...curr, courseId: event.target.value } : curr)}
                   className="w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/[0.05]"
                 >
-                  <option value={UNRELATED_SESSIONS_COURSE_ID}>Unrelated (private session)</option>
+                  <option value={PERSONAL_EVENTS_COURSE_ID}>Unrelated (private session)</option>
                   {courses
-                    .filter((course) => course.id !== UNRELATED_SESSIONS_COURSE_ID)
+                    .filter((course) => course.id !== PERSONAL_EVENTS_COURSE_ID)
                     .map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
                 </select>
                 <select

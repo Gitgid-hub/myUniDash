@@ -1,12 +1,14 @@
 import {
   addDays,
   expandMeetingOccurrences,
+  expandPersonalEventOccurrences,
   formatDateKey,
   formatSessionType,
+  PERSONAL_EVENTS_COURSE_ID,
   type SessionOccurrence
 } from "@/lib/calendar-occurrences";
 import { startOfDay } from "@/lib/date";
-import type { Course } from "@/lib/types";
+import type { Course, PersonalEvent } from "@/lib/types";
 
 const DEFAULT_BACK_DAYS = 90;
 const DEFAULT_FORWARD_DAYS = 540;
@@ -70,12 +72,16 @@ function foldLine(line: string): string {
  */
 export function buildSchoolSessionsIcs(
   courses: Course[],
-  anchor: Date = new Date()
+  anchor: Date = new Date(),
+  personalEvents: PersonalEvent[] = []
 ): { text: string; eventCount: number } {
   const rangeStart = startOfDay(addDays(anchor, -DEFAULT_BACK_DAYS));
   const rangeEnd = startOfDay(addDays(anchor, DEFAULT_FORWARD_DAYS));
   const active = courses.filter((c) => !c.archived);
-  const occs = expandMeetingOccurrences(active, rangeStart, rangeEnd);
+  const occs = [
+    ...expandMeetingOccurrences(active, rangeStart, rangeEnd),
+    ...expandPersonalEventOccurrences(personalEvents, rangeStart, rangeEnd)
+  ];
   const dtStamp = formatIcsUtcStamp(new Date());
   const lines: string[] = [
     "BEGIN:VCALENDAR",
@@ -90,10 +96,13 @@ export function buildSchoolSessionsIcs(
   for (const occ of occs) {
     const { start, end, allDay } = occurrenceBounds(occ);
     const titlePart = occ.meeting.title?.trim() || formatSessionType(occ.meeting.type);
-    const summary = escapeIcsText(`${occ.course.code} ${occ.course.name} · ${titlePart}`.slice(0, 240));
+    const isPersonal = occ.course.id === PERSONAL_EVENTS_COURSE_ID;
+    const summary = isPersonal
+      ? escapeIcsText(titlePart.slice(0, 240))
+      : escapeIcsText(`${occ.course.code} ${occ.course.name} · ${titlePart}`.slice(0, 240));
     const loc = occ.meeting.location?.trim();
     const descBits = [
-      occ.course.name,
+      isPersonal ? "" : occ.course.name,
       occ.meeting.notes?.trim() ? `Notes: ${occ.meeting.notes.trim()}` : "",
       loc ? `Location: ${loc}` : ""
     ].filter(Boolean);

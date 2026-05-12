@@ -6,6 +6,7 @@ export function createSeedState(): SchoolState {
     tasks: [],
     workBlocks: [],
     classNotes: [],
+    personalEvents: [],
     reminderSettings: {
       offsetsHours: [336, 168, 72, 24, 2]
     },

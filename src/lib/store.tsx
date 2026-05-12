@@ -17,6 +17,7 @@ import type {
   Course,
   ID,
   MainView,
+  PersonalEvent,
   SchoolState,
   Store,
   Task,
@@ -105,7 +106,10 @@ type Action =
     }
   | { type: "update-class-note"; payload: Partial<ClassNote> & { id: ID } }
   | { type: "delete-class-note"; payload: ID }
-  | { type: "publish-class-note"; payload: ID };
+  | { type: "publish-class-note"; payload: ID }
+  | { type: "add-personal-event"; payload: Omit<PersonalEvent, "createdAt" | "updatedAt"> & { id?: ID } }
+  | { type: "update-personal-event"; payload: Partial<PersonalEvent> & { id: ID } }
+  | { type: "delete-personal-event"; payload: ID };
 
 interface SchoolStoreValue {
   state: SchoolState;
@@ -117,11 +121,14 @@ interface SchoolStoreValue {
   addCourse: (input: CourseInput) => void;
 }
 
+const LEGACY_UNRELATED_COURSE_ID = "course-unrelated-sessions";
+
 const fallback: SchoolState = {
   courses: [],
   tasks: [],
   workBlocks: [],
   classNotes: [],
+  personalEvents: [],
   reminderSettings: { offsetsHours: [336, 168, 72, 24, 2] },
   ui: {
     activeView: "dashboard",
@@ -157,8 +164,38 @@ function normalizeTask(task: Task): Task {
   return { ...task, attachments };
 }
 
+function migratePersonalEvents(state: SchoolState): { courses: Course[]; personalEvents: PersonalEvent[] } {
+  const legacyCourse = (state.courses ?? []).find((c) => c.id === LEGACY_UNRELATED_COURSE_ID);
+  const existingPersonalEvents: PersonalEvent[] = Array.isArray(state.personalEvents) ? state.personalEvents : [];
+  const existingIds = new Set(existingPersonalEvents.map((e) => e.id));
+  const migrated: PersonalEvent[] = legacyCourse
+    ? legacyCourse.meetings
+        .filter((m) => m.id && !existingIds.has(m.id!))
+        .map((m) => ({
+          id: m.id!,
+          title: m.title?.trim() || "Personal event",
+          color: legacyCourse.color ?? "#64748b",
+          day: m.day,
+          start: m.start,
+          end: m.end,
+          location: m.location,
+          notes: m.notes,
+          isAllDay: m.isAllDay,
+          anchorDate: m.anchorDate,
+          recurrence: m.recurrence,
+          createdAt: nowIso(),
+          updatedAt: nowIso()
+        }))
+    : [];
+  return {
+    courses: (state.courses ?? []).filter((c) => c.id !== LEGACY_UNRELATED_COURSE_ID),
+    personalEvents: [...existingPersonalEvents, ...migrated]
+  };
+}
+
 function normalizeState(state: SchoolState): SchoolState {
-  const courses = state.courses.map((course) => normalizeCourse(mergeAdHocExamsIntoCourse(course)));
+  const { courses: migratedCourses, personalEvents } = migratePersonalEvents(state);
+  const courses = migratedCourses.map((course) => normalizeCourse(mergeAdHocExamsIntoCourse(course)));
   const tasks = mergeAdHocExamTasksIntoList(state.tasks ?? [], courses, nowIso()).map(normalizeTask);
   const reminderSettings = mergeAdHocReminderOffsets(state.reminderSettings ?? fallback.reminderSettings);
   return {
@@ -166,6 +203,7 @@ function normalizeState(state: SchoolState): SchoolState {
     courses,
     tasks,
     reminderSettings,
+    personalEvents,
     workBlocks: state.workBlocks ?? [],
     classNotes: (state.classNotes ?? []).map(normalizeClassNote),
     ui: {
@@ -481,6 +519,34 @@ function reducer(state: SchoolState, action: Action): SchoolState {
         classNotes: notes.map((n) => (n.id === note.id ? { ...n, status: "saved" as const, updatedAt: now } : n))
       };
     }
+    case "add-personal-event": {
+      const now = nowIso();
+      const event: PersonalEvent = {
+        id: action.payload.id ?? createId("pevt"),
+        title: action.payload.title,
+        color: action.payload.color,
+        day: action.payload.day,
+        start: action.payload.start,
+        end: action.payload.end,
+        location: action.payload.location,
+        notes: action.payload.notes,
+        isAllDay: action.payload.isAllDay,
+        anchorDate: action.payload.anchorDate,
+        recurrence: action.payload.recurrence,
+        createdAt: now,
+        updatedAt: now
+      };
+      return { ...state, personalEvents: [event, ...(state.personalEvents ?? [])] };
+    }
+    case "update-personal-event":
+      return {
+        ...state,
+        personalEvents: (state.personalEvents ?? []).map((e) =>
+          e.id === action.payload.id ? { ...e, ...action.payload, updatedAt: nowIso() } : e
+        )
+      };
+    case "delete-personal-event":
+      return { ...state, personalEvents: (state.personalEvents ?? []).filter((e) => e.id !== action.payload) };
     default:
       return state;
   }

@@ -184,11 +184,29 @@ export interface UIState {
   appleCalendarAutoSync?: boolean;
 }
 
+/** A free-standing calendar event not tied to any course (formerly stored on the fake "Unrelated sessions" course). */
+export interface PersonalEvent {
+  id: ID;
+  title: string;
+  color: string;
+  day: WeekDay;
+  start: string;
+  end: string;
+  location?: string;
+  notes?: string;
+  isAllDay?: boolean;
+  anchorDate?: string;
+  recurrence?: SessionRecurrence;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SchoolState {
   courses: Course[];
   tasks: Task[];
   workBlocks: WorkBlock[];
   classNotes: ClassNote[];
+  personalEvents: PersonalEvent[];
   reminderSettings: ReminderSettings;
   ui: UIState;
 }
