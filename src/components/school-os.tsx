@@ -5847,6 +5847,23 @@ function CalendarView({
   }
 
   function moveMeetingAtMinutes(courseId: string, meetingId: string, targetDate: Date, startMinutes: number) {
+    if (courseId === PERSONAL_EVENTS_COURSE_ID) {
+      const evt = personalEvents.find((e) => e.id === meetingId);
+      if (!evt || evt.isAllDay) return;
+      const duration = Math.max(0.5, parseTimeValue(evt.end) - parseTimeValue(evt.start));
+      const nextDay = getWeekDayFromDate(targetDate);
+      onUpdatePersonalEvent({
+        id: evt.id,
+        day: nextDay,
+        start: formatHourMinutes(startMinutes),
+        end: formatHourMinutes(startMinutes + duration * 60),
+        anchorDate: new Date(`${formatDateKey(targetDate)}T12:00:00`).toISOString(),
+        recurrence: evt.recurrence?.cadence === "weekly"
+          ? { ...evt.recurrence, daysOfWeek: [nextDay] }
+          : evt.recurrence
+      });
+      return;
+    }
     const course = courses.find((item) => item.id === courseId);
     const meeting = course?.meetings.find((item) => item.id === meetingId);
     if (!course || !meeting || meeting.isAllDay) return;
@@ -5885,6 +5902,27 @@ function CalendarView({
     targetDate: Date,
     startMinutes: number
   ) {
+    if (courseId === PERSONAL_EVENTS_COURSE_ID) {
+      const evt = personalEvents.find((e) => e.id === meetingId);
+      if (!evt || evt.isAllDay) return;
+      const duration = Math.max(0.5, parseTimeValue(evt.end) - parseTimeValue(evt.start));
+      const nextDay = getWeekDayFromDate(targetDate);
+      const sourceKey = formatDateKey(sourceDate);
+      const baseRecurrence = evt.recurrence ?? { cadence: "weekly" as const, interval: 1, daysOfWeek: [evt.day] };
+      const nextExceptions = Array.from(new Set([...(baseRecurrence.exceptions ?? []), sourceKey]));
+      onUpdatePersonalEvent({ id: evt.id, recurrence: { ...baseRecurrence, exceptions: nextExceptions } });
+      onAddPersonalEvent({
+        id: createId("pevt"),
+        title: evt.title,
+        color: evt.color,
+        day: nextDay,
+        start: formatHourMinutes(startMinutes),
+        end: formatHourMinutes(startMinutes + duration * 60),
+        anchorDate: new Date(`${formatDateKey(targetDate)}T12:00:00`).toISOString(),
+        recurrence: { cadence: "none", interval: 1 }
+      });
+      return;
+    }
     const course = courses.find((item) => item.id === courseId);
     const meeting = course?.meetings.find((item) => item.id === meetingId);
     if (!course || !meeting || meeting.isAllDay) return;
@@ -5926,6 +5964,17 @@ function CalendarView({
   }
 
   function resizeMeetingAtMinutes(courseId: string, meetingId: string, startMinutes: number, endMinutes: number, anchorDate: Date) {
+    if (courseId === PERSONAL_EVENTS_COURSE_ID) {
+      const evt = personalEvents.find((e) => e.id === meetingId);
+      if (!evt || evt.isAllDay) return;
+      onUpdatePersonalEvent({
+        id: evt.id,
+        start: formatHourMinutes(startMinutes),
+        end: formatHourMinutes(Math.max(startMinutes + 15, endMinutes)),
+        anchorDate: new Date(`${formatDateKey(anchorDate)}T12:00:00`).toISOString()
+      });
+      return;
+    }
     const course = courses.find((item) => item.id === courseId);
     const meeting = course?.meetings.find((item) => item.id === meetingId);
     if (!course || !meeting || meeting.isAllDay) return;
@@ -6837,8 +6886,11 @@ function CalendarView({
                       WEEK_TIMELINE_ROW_PX,
                       pointerOffsetMinutes
                     );
-                    const course = courses.find((item) => item.id === draggingSession.courseId);
-                    const meeting = course?.meetings.find((item) => item.id === draggingSession.meetingId);
+                    const isPersonalDrag = draggingSession.courseId === PERSONAL_EVENTS_COURSE_ID;
+                    const course = isPersonalDrag ? undefined : courses.find((item) => item.id === draggingSession.courseId);
+                    const meeting = isPersonalDrag
+                      ? personalEvents.find((e) => e.id === draggingSession.meetingId)
+                      : course?.meetings.find((item) => item.id === draggingSession.meetingId);
                     const recurrenceCadence = meeting?.recurrence?.cadence ?? "weekly";
                     if (meeting && recurrenceCadence !== "none") {
                       setRecurrenceMovePrompt({
@@ -7684,8 +7736,11 @@ function CalendarView({
                         dayHourHeight,
                         pointerOffsetMinutes
                       );
-                      const course = courses.find((item) => item.id === draggingSession.courseId);
-                      const meeting = course?.meetings.find((item) => item.id === draggingSession.meetingId);
+                      const isPersonalDrag2 = draggingSession.courseId === PERSONAL_EVENTS_COURSE_ID;
+                      const course = isPersonalDrag2 ? undefined : courses.find((item) => item.id === draggingSession.courseId);
+                      const meeting = isPersonalDrag2
+                        ? personalEvents.find((e) => e.id === draggingSession.meetingId)
+                        : course?.meetings.find((item) => item.id === draggingSession.meetingId);
                       const recurrenceCadence = meeting?.recurrence?.cadence ?? "weekly";
                       if (meeting && recurrenceCadence !== "none") {
                         setRecurrenceMovePrompt({
