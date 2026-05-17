@@ -14,6 +14,8 @@ interface ShortcutHandlers {
   getActiveView: () => MainView;
   /** N / מ on the Kanban board: open new task (skipped when typing in a field). */
   openNewTask?: () => void;
+  /** When true, skip app shortcuts so modals and text fields keep native Cmd/Ctrl behavior. */
+  shouldIgnoreShortcuts?: () => boolean;
 }
 
 const VIEW_KEYS: Record<string, MainView> = {
@@ -30,6 +32,14 @@ const VIEW_KEYS: Record<string, MainView> = {
 export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (handlers.shouldIgnoreShortcuts?.()) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      const typing =
+        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
+
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "u") {
         event.preventDefault();
         handlers.openQuickFeedback();
@@ -37,6 +47,7 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
       }
 
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        if (typing) return;
         event.preventDefault();
         if (handlers.getActiveView() === "calendar") {
           handlers.undoCalendarChange();
@@ -46,9 +57,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
         return;
       }
 
-      const target = event.target as HTMLElement | null;
-      const typing =
-        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT" || target?.isContentEditable;
       if (typing && !(event.metaKey || event.ctrlKey)) {
         return;
       }
@@ -73,7 +81,12 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers): void {
         return;
       }
 
-      if (event.key.toLowerCase() === "x") {
+      if (
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "x"
+      ) {
         event.preventDefault();
         handlers.markFocusedDone();
         return;

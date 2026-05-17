@@ -22,7 +22,7 @@ export function formatDue(dateIso?: string): string {
       ? "Tomorrow"
       : date.toLocaleDateString(undefined, { month: "short", day: "numeric", weekday: "short" });
 
-  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
   return `${prefix}, ${time}`;
 }
 

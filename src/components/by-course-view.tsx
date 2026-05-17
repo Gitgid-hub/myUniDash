@@ -3,6 +3,7 @@
 import { Check, Circle } from "lucide-react";
 import { Badge, Panel } from "@/components/ui";
 import type { Course, Task } from "@/lib/types";
+import { formatDueDateOnly } from "@/lib/date-format";
 
 function taskComparator(a: Task, b: Task): number {
   return (a.dueAt ?? "9999").localeCompare(b.dueAt ?? "9999");
@@ -36,7 +37,14 @@ export function ByCourseView({
               {courseTasks.sort(taskComparator).map((task) => (
                 <div key={task.id} className="rounded-lg border border-slate-200 p-2 dark:border-white/10">
                   <div className="flex items-center justify-between">
-                    <button onClick={() => onFocus(task.id)} className="text-left text-sm font-medium">{task.title}</button>
+                    <button onClick={() => onFocus(task.id)} className="text-left text-sm font-medium">
+                      <span className="block">{task.title}</span>
+                      {task.dueAt ? (
+                        <span className="mt-0.5 block text-xs font-normal text-slate-500 dark:text-slate-400">
+                          {formatDueDateOnly(task.dueAt)}
+                        </span>
+                      ) : null}
+                    </button>
                     <button onClick={() => onToggleDone(task.id)} className="rounded p-1 hover:bg-slate-100 dark:hover:bg-white/10">{task.status === "done" ? <Check className="h-4 w-4 text-emerald-500" /> : <Circle className="h-4 w-4" />}</button>
                   </div>
                 </div>

@@ -83,12 +83,13 @@ import { shouldOfferPanoptoFolderPastePrompt } from "@/lib/panopto-folder-url";
 import type { WorkspaceUserRow } from "@/lib/workspace-user-admin";
 import type { EarlyAccessRequestRow } from "@/lib/early-access-types";
 import { coursePalette } from "@/lib/color-utils";
-import { toLocalDateTimeInput } from "@/lib/date-format";
+import { mapApiTasksToDrafts } from "@/lib/ai-task-import-map";
 import { isTaskBlockUnderway } from "@/lib/work-block-utils";
 import { fileToDataUrl } from "@/lib/file-utils";
 import { AddCourseModal } from "@/components/modals/add-course-modal";
 import { CourseEditorModal } from "@/components/modals/course-editor-modal";
 import { SessionEditorModal } from "@/components/modals/session-editor-modal";
+import { AiImportErrorBoundary } from "@/components/modals/ai-import-error-boundary";
 import { AiTaskImportModal, type AiParsedTaskDraft } from "@/components/modals/ai-task-import-modal";
 import { TaskComposer } from "@/components/modals/task-composer";
 import { TaskDetailModal } from "@/components/modals/task-detail-modal";
@@ -137,8 +138,8 @@ const FEATURE_REQUEST_DONE_STORAGE_KEY = "school-os:feature-requests-done:v1";
 /** Latest `created_at` (ISO) among requests the admin has opened on the User Requests view; used for “new since last visit” in the nav. */
 const USER_REQUESTS_SEEN_WATERMARK_KEY = "school-os:user-requests-seen-watermark:v1";
 const KANBAN_BOARD_LAYOUT_STORAGE_KEY = "school-os:kanban-board-layout:v1";
-/** Legacy sentinel kept only for any stale references during migration; use PERSONAL_EVENTS_COURSE_ID from calendar-occurrences. */
-const _LEGACY_PERSONAL_EVENTS_COURSE_ID = "course-unrelated-sessions"; void _LEGACY_PERSONAL_EVENTS_COURSE_ID;
+/** Legacy sentinel for stale local data; prefer PERSONAL_EVENTS_COURSE_ID from calendar-occurrences. */
+const LEGACY_PERSONAL_EVENTS_COURSE_ID = "course-unrelated-sessions";
 
 function loadPostSessionPromptDismissedKeys(): Set<string> {
   if (typeof window === "undefined") return new Set();
@@ -225,6 +226,7 @@ export function SchoolOS() {
   const [aiTaskImportOpen, setAiTaskImportOpen] = useState(false);
   const [aiTaskImportCourseId, setAiTaskImportCourseId] = useState<string | "general" | "">("");
   const [aiTaskImportText, setAiTaskImportText] = useState("");
+  const [aiTaskImportScreenshot, setAiTaskImportScreenshot] = useState<File | null>(null);
   const [aiTaskImportItems, setAiTaskImportItems] = useState<AiParsedTaskDraft[]>([]);
   const [aiTaskImportParsing, setAiTaskImportParsing] = useState(false);
   const [aiTaskImportError, setAiTaskImportError] = useState<string | null>(null);
@@ -647,7 +649,24 @@ export function SchoolOS() {
       if (state.ui.showTaskComposer || state.ui.showSearch) return;
       setComposerInitialCourseId(undefined);
       dispatch({ type: "set-composer", payload: true });
-    }
+    },
+    shouldIgnoreShortcuts: () =>
+      Boolean(
+        state.ui.focusedTaskId ||
+        state.ui.showTaskComposer ||
+        state.ui.showSearch ||
+        isSettingsOpen ||
+        isAddCourseOpen ||
+        isCourseEditorOpen ||
+        isSessionEditorOpen ||
+        aiTaskImportOpen ||
+        sessionDeletePrompt ||
+        postSessionPrompt ||
+        endedWorkBlockId ||
+        appConfirm ||
+        isCatalogPickerOpen ||
+        catalogBookingFlowOpen
+      )
   });
 
   useEffect(() => {
@@ -1428,6 +1447,7 @@ export function SchoolOS() {
       setAiTaskImportCreating(false);
       setAiTaskImportParsing(false);
       setAiTaskImportText("");
+      setAiTaskImportScreenshot(null);
       setAiTaskImportCourseId("");
     },
     []
@@ -1442,62 +1462,54 @@ export function SchoolOS() {
       return;
     }
     const text = aiTaskImportText.trim();
-    if (!text) {
-      setAiTaskImportError("Paste your task plan text first.");
+    const screenshot = aiTaskImportScreenshot;
+    if (!screenshot && !text) {
+      setAiTaskImportError("Upload a screenshot or paste plan text first.");
       return;
     }
     setAiTaskImportParsing(true);
     setAiTaskImportError(null);
     try {
-      const headers = {
-        "Content-Type": "application/json",
-        ...(await getAuthHeader())
-      };
-      const res = await fetch("/api/tasks/parse-plan", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ sourceText: text })
-      });
+      const authHeader = await getAuthHeader();
+      let res: Response;
+      if (screenshot) {
+        const form = new FormData();
+        form.append("image", screenshot);
+        res = await fetch("/api/tasks/parse-screenshot", {
+          method: "POST",
+          headers: authHeader,
+          body: form
+        });
+      } else {
+        res = await fetch("/api/tasks/parse-plan", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeader
+          },
+          body: JSON.stringify({ sourceText: text })
+        });
+      }
       const payload = await res.json();
       if (!res.ok) {
         throw new Error(payload.error ?? "Could not parse tasks.");
       }
-      const raw = Array.isArray(payload.tasks) ? payload.tasks : [];
-      const mapped: AiParsedTaskDraft[] = raw
-        .map((task: Record<string, unknown>, index: number) => {
-          const title = typeof task.title === "string" ? task.title.trim() : "";
-          if (!title) return null;
-          const description = typeof task.description === "string" ? task.description.trim() : "";
-          const dueIso = typeof task.dueAt === "string" ? task.dueAt : "";
-          const due = dueIso ? new Date(dueIso) : null;
-          const dueAt = due && !Number.isNaN(due.getTime()) ? toLocalDateTimeInput(due) : "";
-          const phase = typeof task.phase === "string" ? task.phase.trim() : "";
-          const priorityToken = typeof task.priority === "string" ? task.priority : "";
-          const priority: TaskPriority =
-            priorityToken === "low" || priorityToken === "medium" || priorityToken === "high" || priorityToken === "urgent"
-              ? priorityToken
-              : "medium";
-          return {
-            id: `ai-task-${index}-${Math.random().toString(36).slice(2, 8)}`,
-            title,
-            description,
-            dueAt,
-            priority,
-            include: true,
-            phase: phase || undefined
-          } satisfies AiParsedTaskDraft;
-        })
-        .filter((task: AiParsedTaskDraft | null): task is AiParsedTaskDraft => Boolean(task));
+      const raw = Array.isArray(payload.tasks) ? (payload.tasks as Array<Record<string, unknown>>) : [];
+      const mapped = mapApiTasksToDrafts(raw);
       setAiTaskImportItems(mapped);
       if (mapped.length === 0) {
-        setAiTaskImportError("No actionable tasks detected. Try clearer bullets with dates.");
+        setAiTaskImportError(
+          screenshot
+            ? "No tasks found in the screenshot. Try a clearer crop of the assignment list."
+            : "No actionable tasks detected. Try clearer bullets with dates."
+        );
       }
     } catch (error) {
       setAiTaskImportError(error instanceof Error ? error.message : "Could not parse tasks.");
     } finally {
       setAiTaskImportParsing(false);
     }
-  }, [aiTaskImportCourseId, aiTaskImportText, getAuthHeader, state.courses]);
+  }, [aiTaskImportCourseId, aiTaskImportScreenshot, aiTaskImportText, getAuthHeader, state.courses]);
   const handleCreateAiImportedTasks = useCallback(async () => {
     if (!aiTaskImportCourseId) {
       setAiTaskImportError("Choose a course before creating tasks.");
@@ -1531,6 +1543,7 @@ export function SchoolOS() {
       setAiTaskImportOpen(false);
       setAiTaskImportItems([]);
       setAiTaskImportText("");
+      setAiTaskImportScreenshot(null);
       setAiTaskImportError(null);
       setAiTaskImportCreating(false);
       dispatch({ type: "set-view", payload: "kanban" });
@@ -1783,6 +1796,15 @@ export function SchoolOS() {
         return;
       }
       if (!event.metaKey && !event.ctrlKey && (event.key.toLowerCase() === "n" || event.key === "מ")) {
+        const isPrivateOrPersonalSession =
+          selectedPersonalEvent != null ||
+          selectedCalendarSession.courseId === PERSONAL_EVENTS_COURSE_ID ||
+          selectedCalendarSession.courseId === LEGACY_PERSONAL_EVENTS_COURSE_ID;
+        if (isPrivateOrPersonalSession) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         openClassNoteDraftForSession(selectedCalendarSession.courseId, selectedCalendarSession.meetingId, selectedCalendarSession.anchorDate);
@@ -1874,6 +1896,7 @@ export function SchoolOS() {
       const todayKey = formatDateKey(now);
       const nowMin = now.getHours() * 60 + now.getMinutes();
       for (const occ of todaysSessionOccurrences) {
+        if (occ.course.id === PERSONAL_EVENTS_COURSE_ID) continue;
         if (occ.meeting.isAllDay) continue;
         const meetingId = occ.meeting.id;
         if (!meetingId) continue;
@@ -3059,26 +3082,37 @@ export function SchoolOS() {
         />
       )}
       {aiTaskImportOpen && (
-        <AiTaskImportModal
-          courses={activeCourses}
-          selectedCourseId={aiTaskImportCourseId}
-          planText={aiTaskImportText}
-          items={aiTaskImportItems}
-          parsing={aiTaskImportParsing}
-          creating={aiTaskImportCreating}
-          error={aiTaskImportError}
-          onClose={() => setAiTaskImportOpen(false)}
-          onChangeCourse={setAiTaskImportCourseId}
-          onChangeText={setAiTaskImportText}
-          onParse={() => void handleParseAiTaskImport()}
-          onToggleInclude={(id) =>
-            setAiTaskImportItems((current) => current.map((item) => (item.id === id ? { ...item, include: !item.include } : item)))
-          }
-          onChangeItem={(id, patch) =>
-            setAiTaskImportItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)))
-          }
-          onCreate={() => void handleCreateAiImportedTasks()}
-        />
+        <AiImportErrorBoundary
+          onReset={() => {
+            setAiTaskImportItems([]);
+            setAiTaskImportError(null);
+            setAiTaskImportParsing(false);
+          }}
+        >
+          <AiTaskImportModal
+            courses={activeCourses}
+            selectedCourseId={aiTaskImportCourseId}
+            planText={aiTaskImportText}
+            screenshotFile={aiTaskImportScreenshot}
+            items={aiTaskImportItems}
+            parsing={aiTaskImportParsing}
+            creating={aiTaskImportCreating}
+            error={aiTaskImportError}
+            onClose={() => setAiTaskImportOpen(false)}
+            onChangeCourse={setAiTaskImportCourseId}
+            onChangeText={setAiTaskImportText}
+            onScreenshotChange={setAiTaskImportScreenshot}
+            onScreenshotPasteIssue={setAiTaskImportError}
+            onParse={() => void handleParseAiTaskImport()}
+            onToggleInclude={(id) =>
+              setAiTaskImportItems((current) => current.map((item) => (item.id === id ? { ...item, include: !item.include } : item)))
+            }
+            onChangeItem={(id, patch) =>
+              setAiTaskImportItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+            }
+            onCreate={() => void handleCreateAiImportedTasks()}
+          />
+        </AiImportErrorBoundary>
       )}
       <WeeklyCatchUpOverlays {...weeklyCatchUp.overlayProps} />
       <PanoptoFolderPromptModal

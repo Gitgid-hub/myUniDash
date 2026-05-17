@@ -2,7 +2,9 @@ export function formatDueDateOnly(dueAt?: string): string {
   if (!dueAt) return "No date";
   const date = new Date(dueAt);
   if (Number.isNaN(date.getTime())) return "No date";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const datePart = date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const timePart = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${datePart} · ${timePart}`;
 }
 
 export function toLocalDateInput(iso?: string): string {
@@ -13,6 +15,14 @@ export function toLocalDateInput(iso?: string): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+/** `datetime-local` value from an ISO due timestamp (local timezone). */
+export function toLocalDateTimeInputFromIso(iso?: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return toLocalDateTimeInput(date);
 }
 
 export function toLocalDateTimeInput(date: Date): string {

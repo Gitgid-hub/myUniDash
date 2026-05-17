@@ -20,7 +20,8 @@ import {
   TASK_ATTACHMENT_ACCEPT,
   TASK_ATTACHMENT_MAX_BYTES
 } from "@/lib/task-attachment-blobs";
-import { toLocalDateInput } from "@/lib/date-format";
+import { DateTimeLocalPicker } from "@/components/datetime-local-picker";
+import { toLocalDateTimeInputFromIso } from "@/lib/date-format";
 import { formatFileBytes } from "@/lib/file-utils";
 import { getNextScheduledBlock } from "@/lib/work-block-utils";
 import { resolvePanoptoFolderUrl } from "@/lib/panopto-folder-url";
@@ -48,13 +49,14 @@ export function TaskDetailModal({
   const [courseId, setCourseId] = useState<string | "general">(task.courseId);
   const [status, setStatus] = useState<TaskStatus>(task.status);
   const [priority, setPriority] = useState<TaskPriority>(task.priority);
-  const [dueAt, setDueAt] = useState(toLocalDateInput(task.dueAt));
+  const [dueAt, setDueAt] = useState(toLocalDateTimeInputFromIso(task.dueAt));
   const [attachments, setAttachments] = useState<TaskAttachment[]>(task.attachments ?? []);
   const [pendingFilesById, setPendingFilesById] = useState<Record<string, File>>({});
   const [attachErr, setAttachErr] = useState<string | null>(null);
   const [blobReady, setBlobReady] = useState<Record<string, boolean>>({});
   const [detailSaving, setDetailSaving] = useState(false);
   const [isCommandHeld, setIsCommandHeld] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const taskFileInputRef = useRef<HTMLInputElement>(null);
 
   const attachmentLocalSig = useMemo(() => {
@@ -72,11 +74,28 @@ export function TaskDetailModal({
     setCourseId(task.courseId);
     setStatus(task.status);
     setPriority(task.priority);
-    setDueAt(toLocalDateInput(task.dueAt));
+    setDueAt(toLocalDateTimeInputFromIso(task.dueAt));
     setAttachments(task.attachments ?? []);
     setPendingFilesById({});
     setAttachErr(null);
   }, [task]);
+
+  useEffect(() => {
+    const input = titleInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [task.id]);
+
+  useEffect(() => {
+    function onEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape" || detailSaving) return;
+      event.stopPropagation();
+      onClose();
+    }
+    window.addEventListener("keydown", onEscape, true);
+    return () => window.removeEventListener("keydown", onEscape, true);
+  }, [detailSaving, onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,13 +198,7 @@ export function TaskDetailModal({
 
   async function handleSave() {
     if (detailSaving) return;
-    const normalizedDueAt = dueAt
-      ? (() => {
-          const [year, month, day] = dueAt.split("-").map(Number);
-          const date = new Date(year, (month ?? 1) - 1, day ?? 1, 12, 0, 0, 0);
-          return date.toISOString();
-        })()
-      : undefined;
+    const normalizedDueAt = dueAt ? new Date(dueAt).toISOString() : undefined;
     setDetailSaving(true);
     setAttachErr(null);
     try {
@@ -252,18 +265,26 @@ export function TaskDetailModal({
     };
   }, [title, description, courseId, status, priority, dueAt, task, attachments, pendingFilesById, detailSaving]);
 
+  const fieldClass =
+    "w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]";
+
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-sm sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="task-detail-title"
       onClick={() => {
         if (!detailSaving) onClose();
       }}
     >
       <Panel
-        className="w-full max-w-2xl bg-white/96 dark:bg-[#101317]/96"
+        className="flex max-h-[min(92vh,34rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl p-0 bg-white/96 dark:bg-[#101317]/96"
         onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
       >
         <form
+          className="flex min-h-0 flex-1 flex-col"
           onSubmit={(event) => {
             event.preventDefault();
             void handleSave();
@@ -275,49 +296,58 @@ export function TaskDetailModal({
             void handleSave();
           }}
         >
-          <div className="mb-4 flex items-center justify-between">
+          <div className="flex shrink-0 items-start justify-between gap-2 border-b border-slate-200/80 px-4 py-3 dark:border-white/10">
             <div>
-              <h3 className="text-xl font-semibold tracking-tight">Task details</h3>
-              <p className="text-sm text-slate-500 dark:text-slate-400">Review and edit this task.</p>
+              <h3 id="task-detail-title" className="text-base font-semibold tracking-tight">Task details</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Edit and save when ready.</p>
             </div>
-            <Button variant="ghost" onClick={onClose} disabled={detailSaving} className="h-10 w-10 p-0">
+            <Button variant="ghost" onClick={onClose} disabled={detailSaving} className="h-8 w-8 shrink-0 p-0">
               <X className="h-4 w-4" />
             </Button>
           </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <input value={title} onChange={(event) => setTitle(event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]" />
-            <div className="space-y-1.5">
-              <input value={dueAt} onChange={(event) => setDueAt(event.target.value)} type="date" className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]" />
-              <p className="px-1 text-xs text-slate-500 dark:text-slate-400">{bookingStatusLabel}</p>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+          <div className="space-y-2.5">
+            <input
+              ref={titleInputRef}
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              aria-label="Task title"
+              className={fieldClass}
+            />
+            <div className="space-y-1">
+              <DateTimeLocalPicker value={dueAt} onChange={setDueAt} disabled={detailSaving} compact inline />
+              <p className="px-0.5 text-[11px] text-slate-500 dark:text-slate-400">{bookingStatusLabel}</p>
             </div>
-            <select value={courseId} onChange={(event) => setCourseId(event.target.value)} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]">
+            <div className="grid grid-cols-3 gap-2">
+            <select value={courseId} onChange={(event) => setCourseId(event.target.value)} className={fieldClass}>
               <option value="general">General</option>
               {courses.map((course) => <option key={course.id} value={course.id}>{course.code} {course.name}</option>)}
             </select>
-            <select value={status} onChange={(event) => setStatus(event.target.value as TaskStatus)} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]">
+            <select value={status} onChange={(event) => setStatus(event.target.value as TaskStatus)} className={fieldClass}>
               <option value="backlog">Backlog</option>
               <option value="next">Next</option>
               <option value="in-progress">In progress</option>
               <option value="done">Done</option>
             </select>
-            <select value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]">
+            <select value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)} className={fieldClass}>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
               <option value="urgent">Urgent</option>
             </select>
-            <div className="md:col-span-2 space-y-1.5">
-              <label className="block px-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            </div>
+            <div className="space-y-1">
+              <label className="block px-0.5 text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
                 Description
               </label>
               <textarea
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                className="min-h-[120px] w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]"
+                className={`${fieldClass} min-h-[72px] resize-y`}
               />
             </div>
             {panoptoFolderForTask ? (
-              <div className="md:col-span-2 rounded-2xl border border-slate-200/80 bg-slate-50/60 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
                 <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
                   Panopto — course folder
                 </p>
@@ -349,13 +379,10 @@ export function TaskDetailModal({
                     </Button>
                   ) : null}
                 </div>
-                <p className="mt-2 text-[10px] leading-snug text-slate-400 dark:text-slate-500">
-                  Links inside the description box are plain text; use Open recordings folder or Detected links below to open in a new tab.
-                </p>
               </div>
             ) : null}
             {detectedLinks.length > 0 && (
-              <div className="md:col-span-2 rounded-2xl border border-slate-200/80 bg-slate-50/60 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
                 <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Detected links</p>
                 <div className="space-y-1">
                   {detectedLinks.map((link) => (
@@ -372,7 +399,7 @@ export function TaskDetailModal({
                 </div>
               </div>
             )}
-            <div className="md:col-span-2 space-y-2 rounded-2xl border border-slate-200/80 bg-slate-50/60 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="space-y-2 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
                   Files ({attachments.length}/{TASK_DETAIL_MAX_ATTACHMENTS})
@@ -445,12 +472,13 @@ export function TaskDetailModal({
               )}
             </div>
           </div>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose} disabled={detailSaving}>
+          </div>
+          <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200/80 bg-white/95 px-4 py-3 dark:border-white/10 dark:bg-[#101317]/95">
+            <Button variant="outline" onClick={onClose} disabled={detailSaving} className="h-9 px-4 text-sm">
               Close
             </Button>
-            <Button type="submit" disabled={detailSaving} className={isCommandHeld ? "cmd-save-active" : ""}>
-              {detailSaving ? "Saving…" : "Save changes"}
+            <Button type="submit" disabled={detailSaving} className={`h-9 px-4 text-sm ${isCommandHeld ? "cmd-save-active" : ""}`}>
+              {detailSaving ? "Saving…" : "Save task"}
             </Button>
           </div>
         </form>

@@ -3,6 +3,7 @@ import { Check, Circle } from "lucide-react";
 import { Badge, Panel } from "@/components/ui";
 import type { Course, Task, WorkBlock } from "@/lib/types";
 import { buildBookedBlockByTaskId } from "@/lib/work-block-utils";
+import { formatDueDateOnly } from "@/lib/date-format";
 import { isOverdue, isToday } from "@/lib/date";
 import { priorityColor, statusColor } from "@/lib/task-styles";
 
@@ -80,6 +81,9 @@ export function TaskList({
                   <span className={`rounded-full px-2.5 py-1 ${priorityColor[task.priority]}`}>{task.priority}</span>
                 )}
                 <span className={statusColor[task.status]}>{task.status}</span>
+                {task.dueAt ? (
+                  <span className="text-slate-500 dark:text-slate-400">{formatDueDateOnly(task.dueAt)}</span>
+                ) : null}
                 <span className="text-slate-500 dark:text-slate-400">{bookingLabel}</span>
                 <span className="rounded-full border border-slate-200 px-2.5 py-1 text-slate-500 dark:border-white/10 dark:text-slate-300">{course ? course.code : "General"}</span>
                 {task.recurring && <span className="text-slate-400 dark:text-slate-500">Every {task.recurring.interval} {task.recurring.cadence}</span>}

@@ -19,6 +19,7 @@ import {
   TASK_ATTACHMENT_ACCEPT,
   TASK_ATTACHMENT_MAX_BYTES
 } from "@/lib/task-attachment-blobs";
+import { DateTimeLocalPicker } from "@/components/datetime-local-picker";
 import { parseNaturalDeadlineToLocalInput } from "@/lib/date-format";
 
 export const TASK_COMPOSER_MAX_FILES = 12;
@@ -56,7 +57,6 @@ export function TaskComposer({
   const [saving, setSaving] = useState(false);
   const [fileHint, setFileHint] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const dueAtInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setCourseId(initialCourseId ?? "");
@@ -203,22 +203,23 @@ export function TaskComposer({
             disabled={!courseId}
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-white/5"
           />
-          <div className="space-y-1">
-            <input
-              ref={dueAtInputRef}
+          <div
+            className="space-y-1 md:col-span-2"
+            onPaste={(event) => {
+              const pasted = event.clipboardData.getData("text");
+              if (!pasted) return;
+              const handled = applyPastedDeadline(pasted);
+              if (handled) event.preventDefault();
+            }}
+          >
+            <DateTimeLocalPicker
               value={dueAt}
-              onChange={(event) => {
-                setDueAt(event.target.value);
+              onChange={(next) => {
+                setDueAt(next);
                 if (dueAtHint) setDueAtHint(null);
               }}
-              onPaste={(event) => {
-                const pasted = event.clipboardData.getData("text");
-                if (!pasted) return;
-                const handled = applyPastedDeadline(pasted);
-                if (handled) event.preventDefault();
-              }}
-              type="datetime-local"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
+              disabled={saving}
+              dateInputClassName="rounded-lg border-slate-300 dark:border-white/10 dark:bg-white/5"
             />
             <div className="flex items-center justify-between gap-2">
               <button
@@ -231,7 +232,6 @@ export function TaskComposer({
                       return;
                     }
                     applyPastedDeadline(pasted);
-                    dueAtInputRef.current?.focus();
                   } catch {
                     setDueAtHint("Clipboard read blocked. Paste directly into the deadline field.");
                   }
