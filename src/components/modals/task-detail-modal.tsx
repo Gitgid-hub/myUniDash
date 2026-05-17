@@ -5,9 +5,11 @@ import {
   useMemo,
   useRef,
   useEffect,
-  type ChangeEvent
+  useCallback,
+  type ChangeEvent,
+  type MouseEvent
 } from "react";
-import { Paperclip, Trash2, Upload, X } from "lucide-react";
+import { Pencil, Paperclip, Trash2, Upload, X } from "lucide-react";
 import { Button, Panel } from "@/components/ui";
 import type { Course, Task, TaskAttachment, TaskPriority, TaskStatus, WorkBlock } from "@/lib/types";
 import { useAuth } from "@/lib/auth";
@@ -21,7 +23,7 @@ import {
   TASK_ATTACHMENT_MAX_BYTES
 } from "@/lib/task-attachment-blobs";
 import { DateTimeLocalPicker } from "@/components/datetime-local-picker";
-import { toLocalDateTimeInputFromIso } from "@/lib/date-format";
+import { formatDueDateOnly, toLocalDateTimeInputFromIso } from "@/lib/date-format";
 import { formatFileBytes } from "@/lib/file-utils";
 import { getNextScheduledBlock } from "@/lib/work-block-utils";
 import { resolvePanoptoFolderUrl } from "@/lib/panopto-folder-url";
@@ -55,6 +57,7 @@ export function TaskDetailModal({
   const [attachErr, setAttachErr] = useState<string | null>(null);
   const [blobReady, setBlobReady] = useState<Record<string, boolean>>({});
   const [detailSaving, setDetailSaving] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [isCommandHeld, setIsCommandHeld] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const taskFileInputRef = useRef<HTMLInputElement>(null);
@@ -68,6 +71,25 @@ export function TaskDetailModal({
     return `${attPart}|${pendPart}`;
   }, [attachments, pendingFilesById]);
 
+  const cancelEdit = useCallback(() => {
+    setTitle(task.title);
+    setDescription(task.description);
+    setCourseId(task.courseId);
+    setStatus(task.status);
+    setPriority(task.priority);
+    setDueAt(toLocalDateTimeInputFromIso(task.dueAt));
+    setAttachments(task.attachments ?? []);
+    setPendingFilesById({});
+    setAttachErr(null);
+    setIsEditing(false);
+  }, [task]);
+
+  const startEditing = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsEditing(true);
+  }, []);
+
   useEffect(() => {
     setTitle(task.title);
     setDescription(task.description);
@@ -78,24 +100,30 @@ export function TaskDetailModal({
     setAttachments(task.attachments ?? []);
     setPendingFilesById({});
     setAttachErr(null);
-  }, [task]);
+    setIsEditing(false);
+  }, [task.id]);
 
   useEffect(() => {
+    if (!isEditing) return;
     const input = titleInputRef.current;
     if (!input) return;
     input.focus();
     input.select();
-  }, [task.id]);
+  }, [task.id, isEditing]);
 
   useEffect(() => {
     function onEscape(event: KeyboardEvent) {
       if (event.key !== "Escape" || detailSaving) return;
       event.stopPropagation();
+      if (isEditing) {
+        cancelEdit();
+        return;
+      }
       onClose();
     }
     window.addEventListener("keydown", onEscape, true);
     return () => window.removeEventListener("keydown", onEscape, true);
-  }, [detailSaving, onClose]);
+  }, [detailSaving, isEditing, onClose, cancelEdit]);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,7 +144,7 @@ export function TaskDetailModal({
     return () => {
       cancelled = true;
     };
-  }, [task.id, attachmentLocalSig, pendingFilesById]);
+  }, [task.id, attachmentLocalSig, pendingFilesById, detailUser?.id]);
 
   const detectedLinks = useMemo(() => {
     const matches = description.match(/https?:\/\/[^\s]+/g) ?? [];
@@ -197,7 +225,7 @@ export function TaskDetailModal({
   };
 
   async function handleSave() {
-    if (detailSaving) return;
+    if (detailSaving || !isEditing) return;
     const normalizedDueAt = dueAt ? new Date(dueAt).toISOString() : undefined;
     setDetailSaving(true);
     setAttachErr(null);
@@ -242,6 +270,7 @@ export function TaskDetailModal({
       if (event.metaKey || event.ctrlKey) {
         setIsCommandHeld(true);
       }
+      if (!isEditing) return;
       if (event.key !== "Enter") return;
       if (!(event.metaKey || event.ctrlKey)) return;
       event.preventDefault();
@@ -263,10 +292,21 @@ export function TaskDetailModal({
       window.removeEventListener("keyup", onWindowKeyUp);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [title, description, courseId, status, priority, dueAt, task, attachments, pendingFilesById, detailSaving]);
+  }, [title, description, courseId, status, priority, dueAt, task, attachments, pendingFilesById, detailSaving, isEditing]);
 
   const fieldClass =
     "w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none dark:border-white/10 dark:bg-white/[0.04]";
+
+  const courseLabel =
+    courseId === "general"
+      ? "General"
+      : courseForTask
+        ? `${courseForTask.code} · ${courseForTask.name}`
+        : "Unknown course";
+
+  const statusLabel =
+    status === "in-progress" ? "In progress" : status.charAt(0).toUpperCase() + status.slice(1);
+  const priorityLabel = priority.charAt(0).toUpperCase() + priority.slice(1);
 
   return (
     <div
@@ -274,212 +314,314 @@ export function TaskDetailModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="task-detail-title"
-      onClick={() => {
-        if (!detailSaving) onClose();
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !detailSaving) onClose();
       }}
     >
       <Panel
-        className="flex max-h-[min(92vh,34rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl p-0 bg-white/96 dark:bg-[#101317]/96"
-        onClick={(event) => event.stopPropagation()}
+        className="flex max-h-[min(92vh,40rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl p-0 bg-white/96 dark:bg-[#101317]/96"
+        onMouseDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
         <form
           className="flex min-h-0 flex-1 flex-col"
           onSubmit={(event) => {
             event.preventDefault();
-            void handleSave();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter") return;
-            if (!(event.metaKey || event.ctrlKey)) return;
-            event.preventDefault();
-            void handleSave();
+            if (isEditing) void handleSave();
           }}
         >
-          <div className="flex shrink-0 items-start justify-between gap-2 border-b border-slate-200/80 px-4 py-3 dark:border-white/10">
+          <div className="flex shrink-0 items-start justify-between gap-2 border-b border-slate-200/80 px-5 py-3 dark:border-white/10">
             <div>
-              <h3 id="task-detail-title" className="text-base font-semibold tracking-tight">Task details</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Edit and save when ready.</p>
+              <h3 id="task-detail-title" className="text-base font-semibold tracking-tight">
+                Task details
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {isEditing ? "Edit fields, then save." : "Review what needs to be done."}
+              </p>
             </div>
             <Button variant="ghost" onClick={onClose} disabled={detailSaving} className="h-8 w-8 shrink-0 p-0">
               <X className="h-4 w-4" />
             </Button>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
-          <div className="space-y-2.5">
-            <input
-              ref={titleInputRef}
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              aria-label="Task title"
-              className={fieldClass}
-            />
-            <div className="space-y-1">
-              <DateTimeLocalPicker value={dueAt} onChange={setDueAt} disabled={detailSaving} compact inline />
-              <p className="px-0.5 text-[11px] text-slate-500 dark:text-slate-400">{bookingStatusLabel}</p>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-            <select value={courseId} onChange={(event) => setCourseId(event.target.value)} className={fieldClass}>
-              <option value="general">General</option>
-              {courses.map((course) => <option key={course.id} value={course.id}>{course.code} {course.name}</option>)}
-            </select>
-            <select value={status} onChange={(event) => setStatus(event.target.value as TaskStatus)} className={fieldClass}>
-              <option value="backlog">Backlog</option>
-              <option value="next">Next</option>
-              <option value="in-progress">In progress</option>
-              <option value="done">Done</option>
-            </select>
-            <select value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)} className={fieldClass}>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="urgent">Urgent</option>
-            </select>
-            </div>
-            <div className="space-y-1">
-              <label className="block px-0.5 text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Description
-              </label>
-              <textarea
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                className={`${fieldClass} min-h-[72px] resize-y`}
-              />
-            </div>
-            {panoptoFolderForTask ? (
-              <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
-                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Panopto — course folder
-                </p>
-                <div className="flex flex-wrap items-center gap-3">
-                  <a
-                    href={panoptoFolderForTask}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="inline-flex max-w-full items-center gap-1.5 break-all text-sm text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-300 dark:hover:text-sky-200"
-                  >
-                    Open recordings folder
-                  </a>
-                  {!description.includes(panoptoFolderForTask) ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-8 px-3 text-xs"
-                      onClick={() => {
-                        const url = panoptoFolderForTask;
-                        setDescription((d) => {
-                          if (d.includes(url)) return d;
-                          const base = d.trim();
-                          const line = `Panopto (course folder): ${url}`;
-                          return base ? `${base}\n\n${line}` : line;
-                        });
-                      }}
+
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
+            <div className="space-y-4">
+              {isEditing ? (
+                <>
+                  <input
+                    ref={titleInputRef}
+                    value={title}
+                    onChange={(event) => setTitle(event.target.value)}
+                    aria-label="Task title"
+                    className={fieldClass}
+                  />
+                  <div className="space-y-1">
+                    <label className="block px-0.5 text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      Due date & time
+                    </label>
+                    <DateTimeLocalPicker
+                      value={dueAt}
+                      onChange={setDueAt}
+                      disabled={detailSaving}
+                      inline
+                      compact
+                    />
+                    <p className="px-0.5 text-xs text-slate-500 dark:text-slate-400">{bookingStatusLabel}</p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <select value={courseId} onChange={(event) => setCourseId(event.target.value)} className={fieldClass}>
+                      <option value="general">General</option>
+                      {courses.map((course) => (
+                        <option key={course.id} value={course.id}>
+                          {course.code} {course.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={status}
+                      onChange={(event) => setStatus(event.target.value as TaskStatus)}
+                      className={fieldClass}
                     >
-                      Add link to description
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            {detectedLinks.length > 0 && (
-              <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
-                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Detected links</p>
-                <div className="space-y-1">
-                  {detectedLinks.map((link) => (
+                      <option value="backlog">Backlog</option>
+                      <option value="next">Next</option>
+                      <option value="in-progress">In progress</option>
+                      <option value="done">Done</option>
+                    </select>
+                    <select
+                      value={priority}
+                      onChange={(event) => setPriority(event.target.value as TaskPriority)}
+                      className={fieldClass}
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="urgent">Urgent</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block px-0.5 text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      Description
+                    </label>
+                    <textarea
+                      value={description}
+                      onChange={(event) => setDescription(event.target.value)}
+                      className={`${fieldClass} min-h-[96px] resize-y`}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-xl font-semibold leading-snug tracking-tight text-slate-900 dark:text-slate-50">
+                    {title}
+                  </h2>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200/80 bg-slate-100/80 px-3 py-1 text-xs font-medium text-slate-700 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-200">
+                      {courseForTask ? (
+                        <span className="h-2 w-2 rounded-full" style={{ background: courseForTask.color }} aria-hidden />
+                      ) : null}
+                      {courseLabel}
+                    </span>
+                    <span className="rounded-full border border-slate-200/80 bg-slate-100/80 px-3 py-1 text-xs font-medium text-slate-700 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-200">
+                      Due {formatDueDateOnly(task.dueAt)}
+                    </span>
+                    <span className="rounded-full border border-slate-200/80 bg-slate-100/80 px-3 py-1 text-xs font-medium text-slate-700 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-200">
+                      {statusLabel}
+                    </span>
+                    <span className="rounded-full border border-slate-200/80 bg-slate-100/80 px-3 py-1 text-xs font-medium text-slate-700 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-200">
+                      {priorityLabel}
+                    </span>
+                    <span className="rounded-full border border-sky-200/80 bg-sky-50/80 px-3 py-1 text-xs text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+                      {bookingStatusLabel}
+                    </span>
+                  </div>
+                  {description.trim() ? (
+                    <section className="rounded-xl border border-slate-200/80 bg-slate-50/50 px-4 py-3 dark:border-white/10 dark:bg-white/[0.03]">
+                      <h4 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        What to do
+                      </h4>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800 dark:text-slate-200">
+                        {description}
+                      </p>
+                    </section>
+                  ) : (
+                    <p className="text-sm text-slate-500 dark:text-slate-400">No description yet.</p>
+                  )}
+                </>
+              )}
+
+              {panoptoFolderForTask ? (
+                <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    Panopto — course folder
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
                     <a
-                      key={link}
-                      href={link}
+                      href={panoptoFolderForTask}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="block truncate text-sm text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-300 dark:hover:text-sky-200"
+                      className="inline-flex max-w-full items-center gap-1.5 break-all text-sm text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-300 dark:hover:text-sky-200"
                     >
-                      {link}
+                      Open recordings folder
                     </a>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div className="space-y-2 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Files ({attachments.length}/{TASK_DETAIL_MAX_ATTACHMENTS})
-                </p>
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={taskFileInputRef}
-                    type="file"
-                    multiple
-                    accept={TASK_ATTACHMENT_ACCEPT}
-                    className="hidden"
-                    disabled={detailSaving}
-                    onChange={handleTaskAttachFiles}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs"
-                    disabled={detailSaving || attachments.length >= TASK_DETAIL_MAX_ATTACHMENTS}
-                    onClick={() => taskFileInputRef.current?.click()}
-                  >
-                    <Upload className="h-3.5 w-3.5" aria-hidden />
-                    Add files
-                  </Button>
-                </div>
-              </div>
-              <p className="text-[10px] leading-snug text-slate-400 dark:text-slate-500">
-                Stored in this browser (IndexedDB). New files and removals apply when you save. Click a file to preview.
-              </p>
-              {attachErr ? <p className="text-xs text-rose-600 dark:text-rose-400">{attachErr}</p> : null}
-              {attachments.length === 0 ? (
-                <p className="text-xs text-slate-500 dark:text-slate-400">No files yet. Use Add files for PDFs or docs from your course site.</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {attachments.map((att) => {
-                    const probe = blobReady[att.id];
-                    const definitelyMissing = probe === false;
-                    return (
-                      <li
-                        key={att.id}
-                        className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white/90 px-3 py-2 text-xs dark:border-white/10 dark:bg-[#15181d]/90"
+                    {isEditing && !description.includes(panoptoFolderForTask) ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 px-3 text-xs"
+                        onClick={() => {
+                          const url = panoptoFolderForTask;
+                          setDescription((d) => {
+                            if (d.includes(url)) return d;
+                            const base = d.trim();
+                            const line = `Panopto (course folder): ${url}`;
+                            return base ? `${base}\n\n${line}` : line;
+                          });
+                        }}
                       >
-                        <button
-                          type="button"
-                          disabled={definitelyMissing}
-                          onClick={() => void openTaskAttachment(att)}
-                          className={`min-w-0 flex-1 truncate text-left ${definitelyMissing ? "cursor-not-allowed text-slate-400" : "text-sky-600 underline-offset-2 hover:underline dark:text-sky-300"}`}
-                        >
-                          <span className="inline-flex items-center gap-1.5">
-                            <Paperclip className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                            {att.name}
-                          </span>
-                          <span className="ml-2 text-[10px] text-slate-400">{formatFileBytes(att.size)}</span>
-                          {definitelyMissing ? (
-                            <span className="ml-2 text-[10px] text-amber-600 dark:text-amber-400">(missing)</span>
-                          ) : null}
-                        </button>
-                        <button
-                          type="button"
-                          className="shrink-0 rounded p-1 text-slate-500 hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
-                          aria-label={`Remove ${att.name}`}
-                          onClick={() => void removeTaskAttachment(att)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                        Add link to description
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {detectedLinks.length > 0 && (
+                <div className="rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    Links
+                  </p>
+                  <div className="space-y-1">
+                    {detectedLinks.map((link) => (
+                      <a
+                        key={link}
+                        href={link}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="block truncate text-sm text-sky-600 underline underline-offset-2 hover:text-sky-500 dark:text-sky-300 dark:hover:text-sky-200"
+                      >
+                        {link}
+                      </a>
+                    ))}
+                  </div>
+                </div>
               )}
+
+              <div className="space-y-2 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                    Files ({attachments.length}/{TASK_DETAIL_MAX_ATTACHMENTS})
+                  </p>
+                  {isEditing ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={taskFileInputRef}
+                        type="file"
+                        multiple
+                        accept={TASK_ATTACHMENT_ACCEPT}
+                        className="hidden"
+                        disabled={detailSaving}
+                        onChange={handleTaskAttachFiles}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs"
+                        disabled={detailSaving || attachments.length >= TASK_DETAIL_MAX_ATTACHMENTS}
+                        onClick={() => taskFileInputRef.current?.click()}
+                      >
+                        <Upload className="h-3.5 w-3.5" aria-hidden />
+                        Add files
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+                {isEditing ? (
+                  <p className="text-[10px] leading-snug text-slate-400 dark:text-slate-500">
+                    Stored in this browser. New files and removals apply when you save.
+                  </p>
+                ) : null}
+                {attachErr ? <p className="text-xs text-rose-600 dark:text-rose-400">{attachErr}</p> : null}
+                {attachments.length === 0 ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {isEditing ? "No files yet. Use Add files for PDFs or docs from your course site." : "No attachments."}
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {attachments.map((att) => {
+                      const probe = blobReady[att.id];
+                      const definitelyMissing = probe === false;
+                      return (
+                        <li
+                          key={att.id}
+                          className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white/90 px-3 py-2 text-xs dark:border-white/10 dark:bg-[#15181d]/90"
+                        >
+                          <button
+                            type="button"
+                            disabled={definitelyMissing}
+                            onClick={() => void openTaskAttachment(att)}
+                            className={`min-w-0 flex-1 truncate text-left ${definitelyMissing ? "cursor-not-allowed text-slate-400" : "text-sky-600 underline-offset-2 hover:underline dark:text-sky-300"}`}
+                          >
+                            <span className="inline-flex items-center gap-1.5">
+                              <Paperclip className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                              {att.name}
+                            </span>
+                            <span className="ml-2 text-[10px] text-slate-400">{formatFileBytes(att.size)}</span>
+                            {definitelyMissing ? (
+                              <span className="ml-2 text-[10px] text-amber-600 dark:text-amber-400">(missing)</span>
+                            ) : null}
+                          </button>
+                          {isEditing ? (
+                            <button
+                              type="button"
+                              className="shrink-0 rounded p-1 text-slate-500 hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
+                              aria-label={`Remove ${att.name}`}
+                              onClick={() => void removeTaskAttachment(att)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
-          </div>
-          <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200/80 bg-white/95 px-4 py-3 dark:border-white/10 dark:bg-[#101317]/95">
-            <Button variant="outline" onClick={onClose} disabled={detailSaving} className="h-9 px-4 text-sm">
-              Close
-            </Button>
-            <Button type="submit" disabled={detailSaving} className={`h-9 px-4 text-sm ${isCommandHeld ? "cmd-save-active" : ""}`}>
-              {detailSaving ? "Saving…" : "Save task"}
-            </Button>
+
+          <div className="flex shrink-0 justify-end gap-2 border-t border-slate-200/80 bg-white/95 px-5 py-3 dark:border-white/10 dark:bg-[#101317]/95">
+            {isEditing ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={cancelEdit}
+                  disabled={detailSaving}
+                  className="h-9 px-4 text-sm"
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={detailSaving} className={`h-9 px-4 text-sm ${isCommandHeld ? "cmd-save-active" : ""}`}>
+                  {detailSaving ? "Saving…" : "Save task"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button type="button" variant="outline" onClick={onClose} disabled={detailSaving} className="h-9 px-4 text-sm">
+                  Close
+                </Button>
+                <Button
+                  type="button"
+                  onMouseDown={startEditing}
+                  onClick={startEditing}
+                  disabled={detailSaving}
+                  className="inline-flex h-9 items-center gap-1.5 px-4 text-sm active:scale-100"
+                >
+                  <Pencil className="h-3.5 w-3.5" aria-hidden />
+                  Edit
+                </Button>
+              </>
+            )}
           </div>
         </form>
       </Panel>
